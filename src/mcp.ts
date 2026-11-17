@@ -4,7 +4,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { z } from 'zod'
 import type { Config } from './config.ts'
 import { detailJson } from './http.ts'
-import { CheckError, type Detail } from './types.ts'
+import { CheckError, DETAIL_FIELDS, type Detail } from './types.ts'
 
 const DATA_PREFIX = /^data:[^;,]*;base64,/
 // ponytail: 空白の除去と文字種の検査だけ。MIME 種別は見ない（画像の正当性は normalize が判定する）
@@ -50,13 +50,18 @@ export function createMcpHandler(
         inputSchema: {
           image_base64: z.string(),
           detail: z.boolean().optional().describe('true なら p_ok・judgment・confidence・render・classes の詳細 JSON を返す'),
+          fields: z
+            .array(z.enum(DETAIL_FIELDS))
+            .min(1)
+            .optional()
+            .describe('詳細 JSON に含める項目を絞る（p_ok は常に含む）。例: ["judgment"]、["confidence"]、["judgment","confidence"]。指定すると detail は不要'),
         },
       },
-      async ({ image_base64, detail }) => {
+      async ({ image_base64, detail, fields }) => {
         try {
           const bytes = decode(image_base64, cfg.maxImageMb)
-          if (detail === true && checkDetail) {
-            const d = detailJson(await checkDetail(bytes, ac.signal))
+          if ((detail === true || fields !== undefined) && checkDetail) {
+            const d = detailJson(await checkDetail(bytes, ac.signal), fields)
             if (!d) throw new CheckError('internal', '判定値が範囲外です')
             return { content: [{ type: 'text', text: JSON.stringify(d) }] }
           }

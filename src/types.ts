@@ -22,6 +22,10 @@ export interface ClassProbs {
 /** 総合判断。5 択（none=対象なし / ok=処理済み / forgot=かけ忘れ / insufficient=不十分 / nori=ノリ）のうち、最も確率が高い答え。 */
 export type Judgment = 'none' | 'ok' | 'forgot' | 'insufficient' | 'nori'
 
+/** 詳細応答で選べる項目（p_ok は常に含む）。`?fields=judgment,confidence`（MCP は fields 引数）で絞る。 */
+export const DETAIL_FIELDS = ['judgment', 'confidence', 'render', 'classes'] as const
+export type DetailField = (typeof DETAIL_FIELDS)[number]
+
 /** 詳細応答 `?detail=1`（MCP は detail: true）の中身。p_ok は較正済み、classes は最悪の描画の生の確率。 */
 export interface Detail {
   pOk: number

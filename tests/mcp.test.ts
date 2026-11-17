@@ -199,3 +199,72 @@ describe('mcp detail', () => {
     expect(textOf(result)).not.toContain('p_ok')
   })
 })
+
+describe('mcp fields（返す項目の選択）', () => {
+  const call = async (args: Record<string, unknown>, onDetail?: () => void) => {
+    const client = await connect(async () => 0.5, async () => (onDetail?.(), DETAIL))
+    return client.callTool({ name: 'check_mosaic', arguments: { image_base64: PNG_B64, ...args } })
+  }
+
+  it('fields: ["judgment"] は p_ok と judgment だけ（detail 不要）', async () => {
+    const result = await call({ fields: ['judgment'] })
+    expect(result.isError).toBeFalsy()
+    const body = JSON.parse(textOf(result))
+    expect(body).toEqual({ p_ok: 0.12, judgment: 'forgot' })
+    expect(Object.keys(body)).toEqual(['p_ok', 'judgment'])
+  })
+
+  it('fields: ["confidence"] は p_ok と confidence だけ', async () => {
+    const body = JSON.parse(textOf(await call({ fields: ['confidence'] })))
+    expect(body).toEqual({ p_ok: 0.12, confidence: 0.62 })
+  })
+
+  it('fields: ["confidence","judgment"] は両方。出力の順は固定', async () => {
+    const body = JSON.parse(textOf(await call({ fields: ['confidence', 'judgment'] })))
+    expect(Object.keys(body)).toEqual(['p_ok', 'judgment', 'confidence'])
+  })
+
+  it('detail: true は 4 項目すべて、fields を併記したら fields が優先', async () => {
+    expect(Object.keys(JSON.parse(textOf(await call({ detail: true }))))).toEqual([
+      'p_ok',
+      'judgment',
+      'confidence',
+      'render',
+      'classes',
+    ])
+    expect(JSON.parse(textOf(await call({ detail: true, fields: ['judgment'] })))).toEqual({
+      p_ok: 0.12,
+      judgment: 'forgot',
+    })
+  })
+
+  it('未知の項目は数値も詳細も返さない（判定は呼ばれない）', async () => {
+    let calls = 0
+    let result: Awaited<ReturnType<typeof call>> | undefined
+    let thrown: unknown
+    try {
+      result = await call({ fields: ['foo'] }, () => calls++)
+    } catch (e) {
+      thrown = e
+    }
+    // SDK の検証エラーは isError の結果か例外のどちらかで返る。どちらでも数値や詳細 JSON は無い
+    if (result) {
+      expect(result.isError).toBe(true)
+      expect(textOf(result)).not.toContain('p_ok')
+      expect(Number.isNaN(Number(textOf(result)))).toBe(true)
+    } else {
+      expect(thrown).toBeDefined()
+    }
+    expect(calls).toBe(0)
+  })
+
+  it('空の fields は受け付けない', async () => {
+    let calls = 0
+    const outcome = await call({ fields: [] }, () => calls++).then(
+      (r) => ({ r }),
+      (e: unknown) => ({ e }),
+    )
+    expect('e' in outcome || (outcome.r.isError === true && !textOf(outcome.r).includes('p_ok'))).toBe(true)
+    expect(calls).toBe(0)
+  })
+})

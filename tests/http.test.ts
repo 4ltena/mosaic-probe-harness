@@ -420,3 +420,83 @@ describe('createHttpServer detail', () => {
     expect(await r.text()).not.toContain('SECRETLEAK')
   })
 })
+
+describe('createHttpServer fields（返す項目の選択）', () => {
+  const post = async (query: string, h: Partial<Handlers> = {}) => {
+    let detailCalls = 0
+    const { base } = await start({}, { check: okCheck, checkDetail: async () => (detailCalls++, DETAIL), ...h })
+    const r = await fetch(`${base}/v1/check?${query}`, { method: 'POST', body: new Uint8Array([1, 2, 3]) })
+    return { r, calls: () => detailCalls }
+  }
+
+  it('fields=judgment は p_ok と judgment だけ', async () => {
+    const { r } = await post('fields=judgment')
+    expect(r.status).toBe(200)
+    const body = await r.json()
+    expect(body).toEqual({ p_ok: 0.12, judgment: 'forgot' })
+    expect(Object.keys(body)).toEqual(['p_ok', 'judgment'])
+  })
+
+  it('fields=confidence は p_ok と confidence だけ', async () => {
+    const { r } = await post('fields=confidence')
+    expect(r.status).toBe(200)
+    const body = await r.json()
+    expect(body).toEqual({ p_ok: 0.12, confidence: 0.62 })
+    expect(Object.keys(body)).toEqual(['p_ok', 'confidence'])
+  })
+
+  it('fields=judgment,confidence は両方。指定の順に関わらず出力の順は固定', async () => {
+    for (const q of ['fields=judgment,confidence', 'fields=confidence,judgment', 'fields=confidence,judgment,judgment']) {
+      const { r } = await post(q)
+      const body = await r.json()
+      expect(r.status).toBe(200)
+      expect(body).toEqual({ p_ok: 0.12, judgment: 'forgot', confidence: 0.62 })
+      expect(Object.keys(body)).toEqual(['p_ok', 'judgment', 'confidence'])
+    }
+  })
+
+  it('fields=render,classes も選べる（detail=1 は 4 項目すべて）', async () => {
+    const { r } = await post('fields=render,classes')
+    expect(Object.keys(await r.json())).toEqual(['p_ok', 'render', 'classes'])
+    const all = await post('detail=1')
+    expect(Object.keys(await all.r.json())).toEqual(['p_ok', 'judgment', 'confidence', 'render', 'classes'])
+  })
+
+  it('fields と detail=1 を併記したら fields が優先', async () => {
+    const { r } = await post('detail=1&fields=judgment')
+    expect(await r.json()).toEqual({ p_ok: 0.12, judgment: 'forgot' })
+  })
+
+  it('不正な fields は 400（黙って捨てない）で、判定は呼ばれない', async () => {
+    for (const q of ['fields=', 'fields=foo', 'fields=judgment,foo', 'fields=,', 'fields=judgment,', 'fields=p_ok']) {
+      const { r, calls } = await post(q)
+      expect(r.status, q).toBe(400)
+      const body = await r.json()
+      expect(body.error).toBe('bad_input')
+      expect(body).not.toHaveProperty('p_ok')
+      expect(calls(), q).toBe(0)
+    }
+  })
+
+  it('checkDetail が無い状態で fields は 501', async () => {
+    const { base } = await start({}, { check: okCheck })
+    const r = await fetch(`${base}/v1/check?fields=judgment`, { method: 'POST', body: 'x' })
+    expect(r.status).toBe(501)
+  })
+
+  it('JSON の image_base64 でも fields が効く', async () => {
+    const { base } = await start({}, { check: okCheck, checkDetail: async () => DETAIL })
+    const r = await fetch(`${base}/v1/check?fields=confidence`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image_base64: Buffer.from('PNGDATA').toString('base64') }),
+    })
+    expect(await r.json()).toEqual({ p_ok: 0.12, confidence: 0.62 })
+  })
+
+  it('選ばなかった項目が範囲外でも、数値も JSON も返さない（500）', async () => {
+    const { r } = await post('fields=judgment', { checkDetail: async () => ({ ...DETAIL, confidence: 7 }) })
+    expect(r.status).toBe(500)
+    expect(await r.text()).toBe(JSON.stringify({ error: 'internal' }))
+  })
+})

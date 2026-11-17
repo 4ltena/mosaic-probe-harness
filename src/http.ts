@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { Config } from './config.ts'
 import { authOk, corsHeaders, ipAllowed } from './net.ts'
-import { CheckError, type Detail, HTTP_STATUS_OF_KIND, type Judgment } from './types.ts'
+import { CheckError, DETAIL_FIELDS, type Detail, type DetailField, HTTP_STATUS_OF_KIND, type Judgment } from './types.ts'
 
 export interface Handlers {
   check(bytes: Uint8Array, signal: AbortSignal): Promise<number>
@@ -15,28 +15,43 @@ export interface Handlers {
 /** 詳細応答の本文（REST と MCP で共通）。 */
 export interface DetailJson {
   p_ok: number
-  judgment: Judgment
-  confidence: number
-  render: string
-  classes: { none: number; ok: number; forgot: number; insufficient: number; nori: number }
+  judgment?: Judgment
+  confidence?: number
+  render?: string
+  classes?: { none: number; ok: number; forgot: number; insufficient: number; nori: number }
 }
 
 const JUDGMENTS: readonly string[] = ['none', 'ok', 'forgot', 'insufficient', 'nori']
 
-/** 詳細を本文の形にする。値が非有限・範囲外なら undefined（数値も JSON も返さない）。 */
-export function detailJson(d: Detail): DetailJson | undefined {
+/**
+ * fields の文字列（カンマ区切り）を解釈する。空・未知の項目・空要素があれば undefined（呼び出し側が 400 にする）。
+ * 重複は除き、順序は DETAIL_FIELDS の順に揃える。
+ */
+export function parseFields(raw: string): DetailField[] | undefined {
+  const parts = raw.split(',').map((s) => s.trim())
+  if (parts.length === 0 || parts.some((p) => !(DETAIL_FIELDS as readonly string[]).includes(p))) return undefined
+  return DETAIL_FIELDS.filter((f) => parts.includes(f))
+}
+
+/**
+ * 詳細を本文の形にする。p_ok は常に含み、fields で選んだ項目だけを足す（未指定なら全部）。
+ * 値が非有限・範囲外なら、選ばなかった項目も含めて undefined（数値も JSON も返さない）。
+ */
+export function detailJson(d: Detail, fields: readonly DetailField[] = DETAIL_FIELDS): DetailJson | undefined {
   const ok = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1
   const c = d.classes
   if (!ok(d.pOk) || typeof d.render !== 'string' || !c) return undefined
   if (!ok(c.none) || !ok(c.ok) || !ok(c.forgot) || !ok(c.insufficient) || !ok(c.nori)) return undefined
   if (!JUDGMENTS.includes(d.judgment) || !ok(d.confidence)) return undefined
-  return {
-    p_ok: d.pOk,
-    judgment: d.judgment,
-    confidence: d.confidence,
-    render: d.render,
-    classes: { none: c.none, ok: c.ok, forgot: c.forgot, insufficient: c.insufficient, nori: c.nori },
+  const out: DetailJson = { p_ok: d.pOk }
+  // 出力の順は固定（p_ok、judgment、confidence、render、classes）
+  if (fields.includes('judgment')) out.judgment = d.judgment
+  if (fields.includes('confidence')) out.confidence = d.confidence
+  if (fields.includes('render')) out.render = d.render
+  if (fields.includes('classes')) {
+    out.classes = { none: c.none, ok: c.ok, forgot: c.forgot, insufficient: c.insufficient, nori: c.nori }
   }
+  return out
 }
 
 // JSON の包み（キー名など）の余裕。base64 の上限計算に足す。
@@ -119,8 +134,18 @@ export function createHttpServer(
     res: ServerResponse,
     meta: { sha: string; size: number },
   ): Promise<void> {
-    const q = new URL(req.url ?? '/', 'http://localhost').searchParams.get('detail')
-    const wantDetail = q === '1' || q === 'true'
+    const params = new URL(req.url ?? '/', 'http://localhost').searchParams
+    const q = params.get('detail')
+    // fields があれば、その項目だけを返す（detail=1 を併記しても fields が優先）。不正な指定は黙って捨てず 400
+    const fieldsRaw = params.get('fields')
+    const fields = fieldsRaw === null ? undefined : parseFields(fieldsRaw)
+    if (fieldsRaw !== null && !fields) {
+      return sendJson(res, 400, {
+        error: 'bad_input',
+        message: 'fields は judgment, confidence, render, classes のカンマ区切りで指定してください',
+      })
+    }
+    const wantDetail = q === '1' || q === 'true' || fields !== undefined
     const cd = wantDetail ? h.checkDetail : undefined
     if (wantDetail && !cd) return sendJson(res, 501, { error: 'not_implemented' })
     const isJson = String(req.headers['content-type'] ?? '').startsWith('application/json')
@@ -155,7 +180,7 @@ export function createHttpServer(
     })
     try {
       if (cd) {
-        const d = detailJson(await cd(bytes, ac.signal))
+        const d = detailJson(await cd(bytes, ac.signal), fields)
         if (!d) return sendJson(res, 500, { error: 'internal' })
         return sendJson(res, 200, d)
       }

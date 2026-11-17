@@ -709,3 +709,43 @@ describe('e2e: 詳細（detail）と 5 択', () => {
     }
   })
 })
+
+describe('e2e: fields の 3 パターン（judgment のみ / confidence のみ / 両方）', () => {
+  it('REST: 3 パターンを実パイプラインで選べる', async () => {
+    const fake = await startFake()
+    const { url, lines } = await startHarness(fake)
+    const png = await pngOf('#ff0000')
+    const get = async (query: string) => {
+      const res = await postDetail(url, png, 'image/png', query)
+      expect(res.status, query).toBe(200)
+      return JSON.parse(await res.text()) as Record<string, unknown>
+    }
+
+    const only = await get('fields=judgment')
+    expect(Object.keys(only)).toEqual(['p_ok', 'judgment'])
+    expect(only.judgment).toBe('forgot')
+
+    const conf = await get('fields=confidence')
+    expect(Object.keys(conf)).toEqual(['p_ok', 'confidence'])
+    expect(conf.confidence as number).toBeCloseTo(0.9, 6)
+
+    const both = await get('fields=judgment,confidence')
+    expect(Object.keys(both)).toEqual(['p_ok', 'judgment', 'confidence'])
+    expect(both.judgment).toBe('forgot')
+    expect(both.confidence as number).toBeCloseTo(0.9, 6)
+    // p_ok は 3 パターンとも同じ値
+    expect(only.p_ok).toBe(conf.p_ok)
+    expect(conf.p_ok).toBe(both.p_ok)
+    expect(lines.join('\n')).not.toContain(KEY)
+  })
+
+  it('REST: 不正な fields は 400 で、判定サーバーに問い合わせない', async () => {
+    const fake = await startFake()
+    const { url } = await startHarness(fake)
+    const before = fake.judgeCalls
+    const res = await postDetail(url, await pngOf('#ff0000'), 'image/png', 'fields=bogus')
+    expect(res.status).toBe(400)
+    expect(await res.text()).not.toContain('p_ok')
+    expect(fake.judgeCalls).toBe(before)
+  })
+})
