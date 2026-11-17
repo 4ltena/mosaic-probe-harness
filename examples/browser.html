@@ -12,6 +12,7 @@
   #result { font-size: 1.5em; margin-top: 16px; }
   #error { color: #b00020; margin-top: 16px; white-space: pre-wrap; }
   .note { color: #666; font-size: 0.9em; }
+  #detail { margin-top: 12px; white-space: pre-wrap; font-size: 0.9em; }
 </style>
 </head>
 <body>
@@ -30,9 +31,13 @@
 <label>画像（PNG / JPEG / WebP / GIF / TIFF / PSD）
   <input id="file" type="file" accept="image/*,.psd">
 </label>
+<label>
+  <input id="withDetail" type="checkbox"> 詳細も取得（問題の種類の参考値）
+</label>
 <button id="go" type="button">判定する</button>
 
 <div id="result"></div>
+<div id="detail"></div>
 <div id="error"></div>
 
 <script>
@@ -40,6 +45,7 @@
 
   $('go').addEventListener('click', async () => {
     $('result').textContent = '';
+    $('detail').textContent = '';
     $('error').textContent = '';
 
     const file = $('file').files[0];
@@ -52,20 +58,33 @@
     const headers = { 'Content-Type': 'application/octet-stream' };
     const key = $('key').value.trim();
     if (key) headers['Authorization'] = 'Bearer ' + key;
+    const withDetail = $('withDetail').checked;
 
     try {
-      // 生バイトをそのまま送る（PSD も可）
-      const res = await fetch(base + '/v1/check', { method: 'POST', headers, body: file });
+      // 生バイトをそのまま送る（PSD も可）。詳細を選んだときだけ ?detail=1 を付ける
+      const url = base + '/v1/check' + (withDetail ? '?detail=1' : '');
+      const res = await fetch(url, { method: 'POST', headers, body: file });
       const text = await res.text();
       if (!res.ok) {
         let msg = text;
         try { msg = JSON.parse(text).error ?? text; } catch { /* 本文がJSONでない */ }
         throw new Error('HTTP ' + res.status + ': ' + msg);
       }
-      const p = Number(text);
+      // 既定の応答は数値だけ。詳細の応答は JSON
+      const p = withDetail ? Number(JSON.parse(text).p_ok) : Number(text);
       if (!Number.isFinite(p)) throw new Error('数値ではない応答');
       // 低いほど危険。しきい値による判定はこのページで行う
       $('result').textContent = 'p_ok = ' + p.toFixed(4);
+      if (withDetail) {
+        // 種類は参考値（較正前の生の確率）。p_ok の代わりに判断しない
+        const d = JSON.parse(text);
+        const c = d.classes;
+        $('detail').textContent =
+          '最悪の描画: ' + d.render + '\n' +
+          '対象なし ' + c.none.toFixed(3) + ' / 処理済み ' + c.ok.toFixed(3) + '\n' +
+          'かけ忘れ ' + c.forgot.toFixed(3) + ' / 不十分 ' + c.insufficient.toFixed(3) + ' / ノリ ' + c.nori.toFixed(3) + '\n' +
+          '（種類は参考。判断の主役は p_ok）';
+      }
     } catch (e) {
       $('error').textContent = String(e.message ?? e);
     }

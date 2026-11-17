@@ -28,6 +28,22 @@ Content-Type: application/octet-stream
 0.8732
 ```
 
+既定の応答は数値 1 個だけです。問題の種類（かけ忘れ・不十分・ノリ）が必要なときだけ、クエリに `detail=1` を付けます（`detail=true` も可。`detail=0` や無指定は数値のみ）。
+
+```http
+POST {BASE}/v1/check?detail=1
+```
+
+成功時のレスポンス（`200 OK`、`application/json`）:
+
+```json
+{"p_ok":0.12,"render":"モザイク名のレイヤーを非表示","classes":{"none":0.01,"ok":0.10,"forgot":0.62,"insufficient":0.20,"nori":0.07}}
+```
+
+- `p_ok`: 既定の応答と同じ値です。
+- `render`: 最悪の描画（`p_ok` が最小の描画）の説明です。
+- `classes`: その描画について、モデルが出した較正前の生の確率です（合計 1）。`forgot`=かけ忘れ、`insufficient`=不十分、`nori`=ノリ（黒い帯・枠で隠している）。
+
 ### REST API（JSON 送信）
 
 `Content-Type: application/json` で送る場合は、`image_base64` に Base64 文字列または Data URI を指定します。
@@ -42,8 +58,8 @@ Content-Type: application/octet-stream
 - **必須ヘッダ**:
   - `Authorization: Bearer {KEY}`
   - `Accept: application/json, text/event-stream`
-- **ツール名**: `check_mosaic({ image_base64: string })`
-- **成功時**: `isError` が未設定（または `false`）で、`content[0].text` に数値文字列（例: `"0.8732"`）が入ります。
+- **ツール名**: `check_mosaic({ image_base64: string, detail?: boolean })`（ツールは `check_mosaic` の 1 つだけです）
+- **成功時**: `isError` が未設定（または `false`）で、`content[0].text` に数値文字列（例: `"0.8732"`）が入ります。`detail: true` のときは、`content[0].text` が REST の詳細応答と同じ JSON 文字列になります（`JSON.parse` で読めます）。
 
 ---
 
@@ -66,6 +82,7 @@ Content-Type: application/octet-stream
 | `502` | VLM（`llama-server`）側の障害・応答不正 | **可**（数秒おいて最大 3 回） |
 | `503` | サーバー混雑（待ち時間超過） | **可**（`Retry-After` に従い最大 3 回） |
 | `500` | サーバー内部エラー | 不可（運用者へ報告） |
+| `501` | `detail` 未対応のビルドで `detail=1` を指定 | 不可（`detail` を外す） |
 
 > [!IMPORTANT]
 > **エラー時に数値を仮置きしないでください。**
@@ -77,6 +94,8 @@ Content-Type: application/octet-stream
 
 1. **しきい値を独断で決めない**
    「何未満を NG / 要確認とするか」は運用者の指示に従ってください。指示がない場合は `p_ok` の数値をそのまま報告し、合否を断定せず人による確認を求めてください。
+1a. **種類は参考情報。`p_ok` が主**
+   `detail` の `classes`（かけ忘れ・不十分・ノリ）は、モデルが出した較正前の生の確率です。`p_ok` の代わりに判定の根拠としないでください。種類を根拠にしてよいのは、運用者がそう決めたときだけです。既定の応答は数値だけで、種類は返しません。
 2. **PSD（レイヤー付き）は原本のまま送る**
    フラット化・縮小・再圧縮を行うと、モザイク層の非表示・解除検査が機能しなくなります。対応形式は **PNG / JPEG / WebP / GIF / TIFF / PSD（8bit）** です。HEIC・BMP・SVG・PSB・PDF などは `415` になるため、対象外の形式を検査したい場合は事前に PNG か PSD（8bit）へ書き出してください。
 3. **1 件ずつ順番に（直列で）送る**
