@@ -1,0 +1,87 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { describe, expect, it, vi } from 'vitest'
+import { parseLabels, summarize } from '../eval/lib.ts'
+
+// label は T1（src/probability.ts）の担当。未実装でも動くようフェイクを注入する。
+// 契約どおり pNg = 1 - p とし、pNg <= tOk で pass、pNg >= tNg で stop、それ以外は hold。
+vi.mock('../src/probability.ts', () => ({
+  label: (p: number, tOk: number, tNg: number) => {
+    const pNg = 1 - p
+    if (pNg <= tOk) return 'pass'
+    if (pNg >= tNg) return 'stop'
+    return 'hold'
+  },
+}))
+
+describe('parseLabels', () => {
+  it('ヘッダ付き CSV を filename と kind の配列にする', () => {
+    expect(parseLabels('filename,kind\na.png,ng\nb.png,ok\n')).toEqual([
+      { filename: 'a.png', kind: 'ng' },
+      { filename: 'b.png', kind: 'ok' },
+    ])
+  })
+
+  it('BOM・CRLF・空行を許容する', () => {
+    expect(parseLabels('﻿filename,kind\r\n\r\na.png,ng\r\n\r\n')).toEqual([{ filename: 'a.png', kind: 'ng' }])
+  })
+
+  it('ヘッダが無ければ例外', () => {
+    expect(() => parseLabels('a.png,ng\n')).toThrow()
+  })
+
+  it('kind は ng/ok/none/attack 以外なら例外', () => {
+    expect(() => parseLabels('filename,kind\nc.png,bad\n')).toThrow()
+    expect(() => parseLabels('filename,kind\nc.png,NG\n')).toThrow()
+  })
+
+  it('列数が 2 でなければ例外', () => {
+    expect(() => parseLabels('filename,kind\nc.png,ng,extra\n')).toThrow()
+  })
+
+  it('ヘッダだけなら空配列', () => {
+    expect(parseLabels('filename,kind\n')).toEqual([])
+  })
+
+  it('同梱の labels.example.csv を読める', () => {
+    const csv = readFileSync(join(process.cwd(), 'eval', 'labels.example.csv'), 'utf8')
+    const rows = parseLabels(csv)
+    expect(rows.length).toBeGreaterThan(0)
+    for (const r of rows) expect(['ng', 'ok', 'none', 'attack']).toContain(r.kind)
+  })
+})
+
+describe('summarize', () => {
+  // tOk=0.1, tNg=0.5 のとき: pOk 0.95 → pass、0.05 → stop、0.7 → hold
+  const rows = [
+    { kind: 'ng', pOk: 0.95 }, // NG が通る（最優先で 0 にすべき）
+    { kind: 'ng', pOk: 0.05 },
+    { kind: 'ng', pOk: 0.7 },
+    { kind: 'ok', pOk: 0.99 },
+    { kind: 'none', pOk: 1 },
+    { kind: 'attack', pOk: 0.02 },
+  ]
+
+  it('kind ごとの label 件数を数える', () => {
+    const s = summarize(rows, 0.1, 0.5)
+    expect(s.counts).toEqual({
+      ng: { pass: 1, hold: 1, stop: 1 },
+      ok: { pass: 1, hold: 0, stop: 0 },
+      none: { pass: 1, hold: 0, stop: 0 },
+      attack: { pass: 0, hold: 0, stop: 1 },
+    })
+  })
+
+  it('ngPassed は NG なのに pass の件数', () => {
+    expect(summarize(rows, 0.1, 0.5).ngPassed).toBe(1)
+    expect(summarize([{ kind: 'ok', pOk: 0.99 }], 0.1, 0.5).ngPassed).toBe(0)
+  })
+
+  it('holdRate は全体に対する hold の割合', () => {
+    expect(summarize(rows, 0.1, 0.5).holdRate).toBeCloseTo(1 / 6, 9)
+  })
+
+  it('行が空でも例外や NaN を出さない', () => {
+    expect(summarize([], 0.1, 0.5)).toEqual({ counts: {}, ngPassed: 0, holdRate: 0 })
+  })
+})
