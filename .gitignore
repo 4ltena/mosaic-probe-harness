@@ -1,0 +1,27 @@
+__pycache__/
+*.pyc
+.env
+.venv/
+eval/images/
+eval/results.jsonl
+calibration.json
+# local agent instructions / context (never commit)
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+.cursorrules
+.claude/
+.codex/
+.cursor/
+.project-notes/
+# DocBase 由来の基準（非公開）
+rules/docbase/
+rules.local.md
+docbase.json
+node_modules/
+dist/
+*.tsbuildinfo
+# 利用者が作るラベル表（評価画像のファイル名と判定）
+eval/labels.csv
+.env.*
+.github/copilot-instructions.md

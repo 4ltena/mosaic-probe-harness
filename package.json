@@ -1,0 +1,31 @@
+{
+  "name": "mosaic-probe-harness",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "MCP server that returns the probability that an image (incl. layered PSD) is properly mosaicked, judged by a local Qwen VLM via Pi (pi-ai / pi-agent-core).",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "start": "tsx src/server.ts",
+    "eval": "tsx eval/run_eval.ts"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "^1.5.2",
+    "@earendil-works/pi-ai": "^1.5.2",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "ag-psd": "^34.2.1",
+    "sharp": "^0.35.5",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vitest": "^5.1.0"
+  }
+}
