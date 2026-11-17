@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>モザイク判定</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 16px; max-width: 640px; }
+  label { display: block; margin: 12px 0 4px; }
+  input[type=text], input[type=password] { width: 100%; box-sizing: border-box; padding: 6px; }
+  button { margin-top: 12px; padding: 6px 16px; }
+  #result { font-size: 1.5em; margin-top: 16px; }
+  #error { color: #b00020; margin-top: 16px; white-space: pre-wrap; }
+  .note { color: #666; font-size: 0.9em; }
+</style>
+</head>
+<body>
+<h1>モザイク判定</h1>
+<p class="note">
+  キーはこのページに埋め込まれていません。入力欄に入れてください。
+  このページを開ける人にはキーが見えるため、LAN 限定で使ってください。
+</p>
+
+<label>API の URL
+  <input id="base" type="text" placeholder="http://<サーバーのIP>:8790">
+</label>
+<label>API キー（ループバック運用では空でよい）
+  <input id="key" type="password" autocomplete="off">
+</label>
+<label>画像（PNG / JPEG / WebP / GIF / TIFF / PSD）
+  <input id="file" type="file" accept="image/*,.psd">
+</label>
+<button id="go" type="button">判定する</button>
+
+<div id="result"></div>
+<div id="error"></div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+
+  $('go').addEventListener('click', async () => {
+    $('result').textContent = '';
+    $('error').textContent = '';
+
+    const file = $('file').files[0];
+    if (!file) {
+      $('error').textContent = '画像を選んでください';
+      return;
+    }
+
+    const base = $('base').value.trim().replace(/\/+$/, '');
+    const headers = { 'Content-Type': 'application/octet-stream' };
+    const key = $('key').value.trim();
+    if (key) headers['Authorization'] = 'Bearer ' + key;
+
+    try {
+      // 生バイトをそのまま送る（PSD も可）
+      const res = await fetch(base + '/v1/check', { method: 'POST', headers, body: file });
+      const text = await res.text();
+      if (!res.ok) {
+        let msg = text;
+        try { msg = JSON.parse(text).error ?? text; } catch { /* 本文がJSONでない */ }
+        throw new Error('HTTP ' + res.status + ': ' + msg);
+      }
+      const p = Number(text);
+      if (!Number.isFinite(p)) throw new Error('数値ではない応答');
+      // 低いほど危険。しきい値による判定はこのページで行う
+      $('result').textContent = 'p_ok = ' + p.toFixed(4);
+    } catch (e) {
+      $('error').textContent = String(e.message ?? e);
+    }
+  });
+</script>
+</body>
+</html>
