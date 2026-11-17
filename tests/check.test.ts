@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { check, type CheckDeps } from '../src/check.ts'
+import { check, checkDetail, type CheckDeps } from '../src/check.ts'
 import { defaultConfig } from '../src/config.ts'
 import { CheckError, type ClassProbs } from '../src/types.ts'
 
@@ -244,5 +244,120 @@ describe('check', () => {
       expect(called).toBe(false)
       expect(r).toBe(0.5)
     })
+  })
+})
+
+// 種類つきの判定結果を作る（ng は 3 種類の合計）
+const kindsProbs = (none: number, ok: number, forgot: number, insufficient: number, nori: number): ClassProbs => ({
+  none,
+  ok,
+  ng: forgot + insufficient + nori,
+  kinds: { forgot, insufficient, nori },
+})
+
+describe('checkDetail', () => {
+  const pOkOf = (p: ClassProbs) => p.ok
+
+  it('3 描画で p_ok が最小の描画の render と classes を返す', async () => {
+    const probs: ClassProbs[] = [
+      kindsProbs(0.01, 0.9, 0.05, 0.03, 0.01),
+      kindsProbs(0.02, 0.2, 0.5, 0.2, 0.08),
+      kindsProbs(0.0, 0.8, 0.1, 0.05, 0.05),
+    ]
+    const d = await checkDetail(
+      SRC,
+      cfg,
+      deps({ renderVariants: renders(3) as CheckDeps['renderVariants'], judge: seqJudge(probs), pOk: pOkOf }),
+    )
+    expect(d.pOk).toBe(0.2)
+    expect(d.render).toBe('v1')
+    expect(d.classes).toEqual({ none: 0.02, ok: 0.2, forgot: 0.5, insufficient: 0.2, nori: 0.08 })
+  })
+
+  it('check は checkDetail.pOk と一致する', async () => {
+    const probs: ClassProbs[] = [kindsProbs(0.01, 0.9, 0.05, 0.03, 0.01), kindsProbs(0.02, 0.2, 0.5, 0.2, 0.08)]
+    const p = await check(
+      SRC,
+      cfg,
+      deps({ renderVariants: renders(2) as CheckDeps['renderVariants'], judge: seqJudge(probs), pOk: pOkOf }),
+    )
+    const d = await checkDetail(
+      SRC,
+      cfg,
+      deps({ renderVariants: renders(2) as CheckDeps['renderVariants'], judge: seqJudge(probs), pOk: pOkOf }),
+    )
+    expect(d.pOk).toBe(p)
+  })
+
+  it('kinds が無い judge（古いフェイク）は forgot=ng、insufficient と nori は 0', async () => {
+    const d = await checkDetail(
+      SRC,
+      cfg,
+      deps({
+        renderVariants: renders(1) as CheckDeps['renderVariants'],
+        judge: seqJudge([{ none: 0.1, ok: 0.3, ng: 0.6 }]),
+        pOk: pOkOf,
+      }),
+    )
+    expect(d.classes).toEqual({ none: 0.1, ok: 0.3, forgot: 0.6, insufficient: 0, nori: 0 })
+  })
+
+  it('noriAsOk のとき、ok に足された nori を引いて生の値に戻す', async () => {
+    const nori = defaultConfig({ maxRenders: 8, layerPattern: 'x', maxPixels: 1000, maxEdge: 64, noriAsOk: true })
+    // 生: none 0.1 / ok 0.5 / forgot 0.1 / insufficient 0.1 / nori 0.2 → 移動後: ok 0.7, ng 0.2
+    const d = await checkDetail(
+      SRC,
+      nori,
+      deps({
+        renderVariants: renders(1) as CheckDeps['renderVariants'],
+        judge: seqJudge([{ none: 0.1, ok: 0.7, ng: 0.2, kinds: { forgot: 0.1, insufficient: 0.1, nori: 0.2 } }]),
+        pOk: pOkOf,
+      }),
+    )
+    expect(d.classes.ok).toBeCloseTo(0.5)
+    expect(d.classes.none).toBeCloseTo(0.1)
+    expect(d.classes.forgot).toBeCloseTo(0.1)
+    expect(d.classes.insufficient).toBeCloseTo(0.1)
+    expect(d.classes.nori).toBeCloseTo(0.2)
+  })
+
+  it('再判定で p が下がったら pOk だけ下がり、render と classes は元の描画のまま', async () => {
+    const recheckCfg = defaultConfig({
+      recheck: true,
+      recheckLo: 0.2,
+      recheckHi: 0.9,
+      maxRenders: 8,
+      layerPattern: 'x',
+      maxPixels: 1000,
+      maxEdge: 64,
+    })
+    const probs = kindsProbs(0.05, 0.5, 0.2, 0.2, 0.05)
+    const d = await checkDetail(
+      SRC,
+      recheckCfg,
+      deps({
+        renderVariants: renders(1) as CheckDeps['renderVariants'],
+        judge: seqJudge([probs]),
+        pOk: pOkOf,
+        recheck: async () => 0.3,
+      }),
+    )
+    expect(d.pOk).toBe(0.3)
+    expect(d.render).toBe('v0')
+    expect(d.classes).toEqual({ none: 0.05, ok: 0.5, forgot: 0.2, insufficient: 0.2, nori: 0.05 })
+  })
+
+  it('失敗は CheckError で投げ、数値も Detail も返さない', async () => {
+    const judge = async (): Promise<ClassProbs> => {
+      throw new CheckError('vlm', 'llama-server が応答しません')
+    }
+    const res = await checkDetail(SRC, cfg, deps({ renderVariants: renders(2) as CheckDeps['renderVariants'], judge })).then(
+      (v: unknown) => ({ ok: true as const, v }),
+      (e: unknown) => ({ ok: false as const, e }),
+    )
+    expect(res.ok).toBe(false)
+    if (res.ok) return
+    expect(res.e).toBeInstanceOf(CheckError)
+    expect((res.e as CheckError).kind).toBe('vlm')
   })
 })

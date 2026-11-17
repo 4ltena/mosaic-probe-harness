@@ -1,5 +1,5 @@
 import type { Config } from './config.ts'
-import { CheckError, type ClassProbs } from './types.ts'
+import { CheckError, type ClassProbs, type Detail } from './types.ts'
 
 // 他モジュール（layers.ts / images.ts）と構造的に同じ形。未実装でも型が通るよう、ここに書き下す。
 export interface CheckDeps {
@@ -14,12 +14,20 @@ export interface CheckDeps {
   log?: (line: string) => void
 }
 
-/**
- * 全描画の判定を行い、p_ok の最小値を返す。失敗は CheckError で投げ、数値は返さない。
- * 同時実行は 台数 × スロット数（上限つきの並列）。1 件でも失敗したら残りを中止する。
- * signal が abort されたら、次の描画に進まず、判定要求も止める。
- */
-export async function check(data: Uint8Array, cfg: Config, deps: CheckDeps, signal?: AbortSignal): Promise<number> {
+interface Scored {
+  q: number
+  jpeg: Uint8Array
+  probs: ClassProbs
+  description: string
+}
+
+/** 全描画を判定し、p_ok が最小の描画（再判定後の p を含む）を返す。失敗は CheckError で投げる。 */
+async function runCheck(
+  data: Uint8Array,
+  cfg: Config,
+  deps: CheckDeps,
+  signal?: AbortSignal,
+): Promise<{ p: number; worst: Scored }> {
   try {
     const variants = await deps.renderVariants(data, {
       maxRenders: cfg.maxRenders,
@@ -33,7 +41,7 @@ export async function check(data: Uint8Array, cfg: Config, deps: CheckDeps, sign
     const ctl = new AbortController()
     const onAbort = () => ctl.abort(signal?.reason)
     signal?.addEventListener('abort', onAbort, { once: true })
-    const scores: { q: number; jpeg: Uint8Array }[] = []
+    const scores: Scored[] = []
     let next = 0
     // 最初の失敗だけを記録する（残りの worker は abort で止まり、その例外は捨てる）
     let firstErr: { e: unknown } | undefined
@@ -44,7 +52,8 @@ export async function check(data: Uint8Array, cfg: Config, deps: CheckDeps, sign
           const i = next++
           const jpeg = await deps.normalize(variants[i]!.image, { maxEdge: cfg.maxEdge, maxPixels: cfg.maxPixels })
           ctl.signal.throwIfAborted()
-          scores[i] = { q: deps.pOk(await deps.judge(jpeg, ctl.signal)), jpeg }
+          const probs = await deps.judge(jpeg, ctl.signal)
+          scores[i] = { q: deps.pOk(probs), jpeg, probs, description: variants[i]!.description }
         }
       } catch (e) {
         firstErr ??= { e }
@@ -57,28 +66,60 @@ export async function check(data: Uint8Array, cfg: Config, deps: CheckDeps, sign
     if (firstErr) throw firstErr.e
     signal?.throwIfAborted()
 
-    let p = Infinity
-    let worstJpeg: Uint8Array = new Uint8Array(0)
+    let worst = scores[0]!
     for (const s of scores) {
-      if (s.q < p) {
-        p = s.q
-        worstJpeg = s.jpeg
-      }
+      if (s.q < worst.q) worst = s
     }
+    let p = worst.q
 
     // 再判定は既定オフ。範囲内の最悪ケースだけを対象にし、結果は下げるだけ
     if (cfg.recheck && deps.recheck && p >= cfg.recheckLo && p <= cfg.recheckHi) {
       try {
-        const r = await deps.recheck(worstJpeg, p)
+        const r = await deps.recheck(worst.jpeg, p)
         if (Number.isFinite(r)) p = Math.min(p, r)
       } catch {
         deps.log?.('再判定に失敗したため一次判定を採用')
       }
     }
-    return p
+    return { p, worst }
   } catch (e) {
     if (e instanceof CheckError) throw e
     if (signal?.aborted) throw signal.reason
     throw new CheckError('internal', '判定中に内部エラーが起きました')
   }
+}
+
+/**
+ * 判定の生の確率から詳細の classes を作る。
+ * noriAsOk のとき judge は nori を ok に足しているので、ok から nori を引いて生の値に戻す。
+ * kinds が無い judge（古いフェイク）は、ng をすべて forgot として扱う（最も重い扱い）。
+ */
+function classesOf(p: ClassProbs, cfg: Config): Detail['classes'] {
+  const k = p.kinds
+  if (!k) return { none: p.none, ok: p.ok, forgot: p.ng, insufficient: 0, nori: 0 }
+  const ok = cfg.noriAsOk ? Math.max(0, p.ok - k.nori) : p.ok
+  return { none: p.none, ok, forgot: k.forgot, insufficient: k.insufficient, nori: k.nori }
+}
+
+/**
+ * 全描画の判定を行い、p_ok の最小値を返す。失敗は CheckError で投げ、数値は返さない。
+ * 同時実行は 台数 × スロット数（上限つきの並列）。1 件でも失敗したら残りを中止する。
+ * signal が abort されたら、次の描画に進まず、判定要求も止める。
+ */
+export async function check(data: Uint8Array, cfg: Config, deps: CheckDeps, signal?: AbortSignal): Promise<number> {
+  return (await runCheck(data, cfg, deps, signal)).p
+}
+
+/**
+ * check と同じ判定を行い、詳細（p_ok・最悪の描画の説明・生の種類確率）を返す。
+ * pOk は check の戻りと同じ。render と classes は最悪の描画（再判定で下がっても元の描画）のもの。
+ */
+export async function checkDetail(
+  data: Uint8Array,
+  cfg: Config,
+  deps: CheckDeps,
+  signal?: AbortSignal,
+): Promise<Detail> {
+  const { p, worst } = await runCheck(data, cfg, deps, signal)
+  return { pOk: p, render: worst.description, classes: classesOf(worst.probs, cfg) }
 }
