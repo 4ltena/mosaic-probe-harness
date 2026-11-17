@@ -120,6 +120,21 @@ curl -X POST "http://<サーバーのIP>:8790/v1/check?detail=1" \
 - 失敗時は、既定の応答と同じエラー（`{"error": …}`）だけを返し、数値も詳細も返しません。
 - `detail` を付けても、判定の内容・時間は変わりません（同じ描画を判定し、結果の表示を増やすだけです）。
 
+#### 返す項目を選ぶ（`fields`）
+
+必要な項目だけを返させるには、`detail` の代わりに `fields` を付けます（カンマ区切り）。**`p_ok` は常に含まれます。** 総合判断まわりの 3 パターンは次のとおりです。
+
+| 欲しいもの | クエリ | 応答 |
+|---|---|---|
+| 総合判断だけ | `?fields=judgment` | `{"p_ok":0.12,"judgment":"forgot"}` |
+| 総合判断の確率だけ | `?fields=confidence` | `{"p_ok":0.12,"confidence":0.62}` |
+| 両方 | `?fields=judgment,confidence` | `{"p_ok":0.12,"judgment":"forgot","confidence":0.62}` |
+
+- 選べる項目は `judgment`、`confidence`、`render`、`classes` です（例: `?fields=render,classes`）。`detail=1` は、この 4 つすべてを返します。
+- 項目の並びは、指定した順に関わらず固定です（`p_ok`、`judgment`、`confidence`、`render`、`classes`）。重複は 1 つにまとめます。
+- `fields` を付けると `detail` は不要です。併記した場合は `fields` が優先されます。
+- **不正な指定は黙って捨てず `400`（`bad_input`）**になり、判定も行いません。空（`fields=`）、未知の項目、空の要素（`fields=judgment,`）が対象です。数値も詳細も返りません。
+
 #### 生バイトで送信する（推奨）
 
 ブラウザの `fetch` で `File` / `Blob` をそのまま渡す場合や、PSD ファイルを送信する場合に適しています。`Content-Type` が `application/json` 以外（`application/octet-stream` や `image/*` など）の場合は生バイトとして読み取ります。
@@ -147,7 +162,7 @@ curl -X POST http://<サーバーのIP>:8790/v1/check \
 ステートレスな Streamable HTTP（JSON 応答）エンドポイントです。HTTP リクエスト時はヘッダに `Accept: application/json, text/event-stream` を指定してください。
 
 - **公開ツール**: `check_mosaic({ image_base64: string, detail?: boolean })`（公開するツールは `check_mosaic` の 1 つだけです）
-- **成功時**: `content[0].text` に数値文字列（例: `"0.8732"`）のみを返します。`detail: true` のときは、`content[0].text` に REST の詳細応答と同じ JSON 文字列を入れます（`JSON.parse` で読めます。形式は上の「詳細を取得する」を参照）。
+- **成功時**: `content[0].text` に数値文字列（例: `"0.8732"`）のみを返します。`fields`（`["judgment"]` など）か `detail: true` のときは、`content[0].text` に REST の詳細応答と同じ JSON 文字列を入れます（`JSON.parse` で読めます。形式は上の「詳細を取得する」を参照）。
 - **失敗時**: `isError: true` となり、`content[0].text` は `error: <種別>: <メッセージ>` で始まります（数値は含みません）。**HTTP ステータスは `200` のままなので、必ず `isError` を確認してください。**
 - `initialize` やセッション ID は不要で、`tools/call` だけで呼べます。
 

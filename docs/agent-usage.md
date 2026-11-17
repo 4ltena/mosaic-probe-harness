@@ -48,6 +48,16 @@ POST {BASE}/v1/check?detail=1
 
 `judgment` と `confidence` は参考情報です。問題の種類が割れていると、問題の合計が大きくても `judgment` が `none` や `ok` になることがあります。**問題の有無は `p_ok` で見てください。**
 
+必要な項目だけを返させるには、`detail` の代わりに `fields`（カンマ区切り）を付けます。`p_ok` は常に含まれます。
+
+| 欲しいもの | クエリ | 応答 |
+|---|---|---|
+| 総合判断だけ | `?fields=judgment` | `{"p_ok":0.12,"judgment":"forgot"}` |
+| その確率だけ | `?fields=confidence` | `{"p_ok":0.12,"confidence":0.62}` |
+| 両方 | `?fields=judgment,confidence` | `{"p_ok":0.12,"judgment":"forgot","confidence":0.62}` |
+
+選べる項目は `judgment`、`confidence`、`render`、`classes` です。**未知の項目や空の指定は `400` で、数値は返りません**（打ち間違いを黙って許さないため）。この場合は、補完せずに「判定不能」として報告してください。
+
 ### REST API（JSON 送信）
 
 `Content-Type: application/json` で送る場合は、`image_base64` に Base64 文字列または Data URI を指定します。

@@ -55,6 +55,17 @@ try {
   const dt = d.content[0]?.text ?? ''
   if (d.isError) console.log('MCP 詳細 失敗', dt)
   else console.log('MCP 詳細 =', JSON.parse(dt))
+
+  // 返す項目を選ぶ: fields（p_ok は常に含む）。総合判断だけ / その確率だけ / 両方。
+  for (const fields of [['judgment'], ['confidence'], ['judgment', 'confidence']]) {
+    const f = await client.callTool({
+      name: 'check_mosaic',
+      arguments: { image_base64: bytes.toString('base64'), fields },
+    })
+    const ft = f.content[0]?.text ?? ''
+    if (f.isError) console.log('MCP fields 失敗', ft)
+    else console.log('MCP fields', fields.join(','), '=', JSON.parse(ft))
+  }
 } finally {
   await client.close()
 }
