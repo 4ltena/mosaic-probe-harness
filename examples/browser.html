@@ -80,6 +80,7 @@
         const d = JSON.parse(text);
         const c = d.classes;
         $('detail').textContent =
+          '総合判断: ' + d.judgment + '（確率 ' + Number(d.confidence).toFixed(3) + '）\n' +
           '最悪の描画: ' + d.render + '\n' +
           '対象なし ' + c.none.toFixed(3) + ' / 処理済み ' + c.ok.toFixed(3) + '\n' +
           'かけ忘れ ' + c.forgot.toFixed(3) + ' / 不十分 ' + c.insufficient.toFixed(3) + ' / ノリ ' + c.nori.toFixed(3) + '\n' +

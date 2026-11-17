@@ -37,12 +37,16 @@ POST {BASE}/v1/check?detail=1
 成功時のレスポンス（`200 OK`、`application/json`）:
 
 ```json
-{"p_ok":0.12,"render":"モザイク名のレイヤーを非表示","classes":{"none":0.01,"ok":0.10,"forgot":0.62,"insufficient":0.20,"nori":0.07}}
+{"p_ok":0.12,"judgment":"forgot","confidence":0.62,"render":"モザイク名のレイヤーを非表示","classes":{"none":0.01,"ok":0.10,"forgot":0.62,"insufficient":0.20,"nori":0.07}}
 ```
 
 - `p_ok`: 既定の応答と同じ値です。
+- `judgment`: 総合判断です。`classes` の 5 択（`none` / `ok` / `forgot` / `insufficient` / `nori`）のうち、最も確率が高い答えです。
+- `confidence`: その総合判断の確率（0〜1、較正前の生の値）です。この判断がどれくらいの確からしさで選ばれたかを示します。
 - `render`: 最悪の描画（`p_ok` が最小の描画）の説明です。
 - `classes`: その描画について、モデルが出した較正前の生の確率です（合計 1）。`forgot`=かけ忘れ、`insufficient`=不十分、`nori`=ノリ（黒い帯・枠で隠している）。
+
+`judgment` と `confidence` は参考情報です。問題の種類が割れていると、問題の合計が大きくても `judgment` が `none` や `ok` になることがあります。**問題の有無は `p_ok` で見てください。**
 
 ### REST API（JSON 送信）
 

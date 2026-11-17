@@ -108,12 +108,15 @@ curl -X POST "http://<サーバーのIP>:8790/v1/check?detail=1" \
 成功時の応答（`200`、`application/json`）の例:
 
 ```json
-{"p_ok":0.12,"render":"モザイク名のレイヤーを非表示","classes":{"none":0.01,"ok":0.10,"forgot":0.62,"insufficient":0.20,"nori":0.07}}
+{"p_ok":0.12,"judgment":"forgot","confidence":0.62,"render":"モザイク名のレイヤーを非表示","classes":{"none":0.01,"ok":0.10,"forgot":0.62,"insufficient":0.20,"nori":0.07}}
 ```
 
 - `p_ok`: 既定の応答と同じ値（較正済み。全描画のうち最小）。
+- `judgment`: **総合判断**。`classes` の 5 択のうち、最も確率が高い答え（`none` / `ok` / `forgot` / `insufficient` / `nori`）。同率のときは重い順（`forgot` > `insufficient` > `nori` > `ok` > `none`）。
+- `confidence`: **総合判断の確率**（0〜1）。`classes[judgment]` と同じ値で、較正前の生の確率。この判断が、どれくらいの確からしさで選ばれたかを示す。
 - `render`: 最悪（`p_ok` が最小）の描画の説明。例: 「見えているとおり」「モザイク名のレイヤーを非表示」。
 - `classes`: その最悪の描画について、モデルが出した**較正前の生の確率**（合計 1）。`none`=対象なし、`ok`=処理済み、`forgot`=かけ忘れ、`insufficient`=不十分、`nori`=ノリ。`p_ok` とは直接の換算関係がないので、`p_ok` の代わりに使わないでください。
+- `judgment` と `confidence` は参考情報です。問題が 3 種類に割れていると（例: かけ忘れ 0.2・不十分 0.2・ノリ 0.2、対象なし 0.35）、問題の合計（0.6）のほうが大きくても `judgment` は `none` になり、`confidence` も低くなります。**問題があるかどうかは `p_ok` で見て、`judgment` と `confidence` は「どの種類か」と「その判断の確からしさ」を知るために使ってください。**
 - 失敗時は、既定の応答と同じエラー（`{"error": …}`）だけを返し、数値も詳細も返しません。
 - `detail` を付けても、判定の内容・時間は変わりません（同じ描画を判定し、結果の表示を増やすだけです）。
 
