@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { Config } from './config.ts'
 import { authOk, corsHeaders, ipAllowed } from './net.ts'
-import { CheckError, type Detail, HTTP_STATUS_OF_KIND } from './types.ts'
+import { CheckError, type Detail, HTTP_STATUS_OF_KIND, type Judgment } from './types.ts'
 
 export interface Handlers {
   check(bytes: Uint8Array, signal: AbortSignal): Promise<number>
@@ -15,9 +15,13 @@ export interface Handlers {
 /** 詳細応答の本文（REST と MCP で共通）。 */
 export interface DetailJson {
   p_ok: number
+  judgment: Judgment
+  confidence: number
   render: string
   classes: { none: number; ok: number; forgot: number; insufficient: number; nori: number }
 }
+
+const JUDGMENTS: readonly string[] = ['none', 'ok', 'forgot', 'insufficient', 'nori']
 
 /** 詳細を本文の形にする。値が非有限・範囲外なら undefined（数値も JSON も返さない）。 */
 export function detailJson(d: Detail): DetailJson | undefined {
@@ -25,8 +29,11 @@ export function detailJson(d: Detail): DetailJson | undefined {
   const c = d.classes
   if (!ok(d.pOk) || typeof d.render !== 'string' || !c) return undefined
   if (!ok(c.none) || !ok(c.ok) || !ok(c.forgot) || !ok(c.insufficient) || !ok(c.nori)) return undefined
+  if (!JUDGMENTS.includes(d.judgment) || !ok(d.confidence)) return undefined
   return {
     p_ok: d.pOk,
+    judgment: d.judgment,
+    confidence: d.confidence,
     render: d.render,
     classes: { none: c.none, ok: c.ok, forgot: c.forgot, insufficient: c.insufficient, nori: c.nori },
   }

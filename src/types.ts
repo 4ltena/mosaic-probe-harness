@@ -19,9 +19,16 @@ export interface ClassProbs {
   kinds?: Kinds
 }
 
+/** 総合判断。5 択（none=対象なし / ok=処理済み / forgot=かけ忘れ / insufficient=不十分 / nori=ノリ）のうち、最も確率が高い答え。 */
+export type Judgment = 'none' | 'ok' | 'forgot' | 'insufficient' | 'nori'
+
 /** 詳細応答 `?detail=1`（MCP は detail: true）の中身。p_ok は較正済み、classes は最悪の描画の生の確率。 */
 export interface Detail {
   pOk: number
+  /** 総合判断（最悪の描画の classes のうち最も確率が高い答え。同率なら重い順 forgot > insufficient > nori > ok > none）。 */
+  judgment: Judgment
+  /** 総合判断の確率（classes[judgment]。較正前の生の値）。この判断がどれくらいの確からしさで選ばれたか。 */
+  confidence: number
   /** 最悪（p_ok が最小）の描画の説明。例: 「見えているとおり」「モザイク名のレイヤーを非表示」。 */
   render: string
   classes: { none: number; ok: number } & Kinds

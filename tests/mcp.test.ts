@@ -115,11 +115,15 @@ describe('mcp', () => {
 
 const DETAIL: Detail = {
   pOk: 0.12,
+  judgment: 'forgot',
+  confidence: 0.62,
   render: 'モザイク名のレイヤーを非表示',
   classes: { none: 0.01, ok: 0.1, forgot: 0.62, insufficient: 0.2, nori: 0.07 },
 }
 const DETAIL_BODY = {
   p_ok: 0.12,
+  judgment: 'forgot',
+  confidence: 0.62,
   render: 'モザイク名のレイヤーを非表示',
   classes: { none: 0.01, ok: 0.1, forgot: 0.62, insufficient: 0.2, nori: 0.07 },
 }

@@ -49,7 +49,7 @@ export function createMcpHandler(
         description: '画像がモザイク処理済み（または処理不要）である確率を 0〜1 で返す',
         inputSchema: {
           image_base64: z.string(),
-          detail: z.boolean().optional().describe('true なら p_ok・render・classes の詳細 JSON を返す'),
+          detail: z.boolean().optional().describe('true なら p_ok・judgment・confidence・render・classes の詳細 JSON を返す'),
         },
       },
       async ({ image_base64, detail }) => {

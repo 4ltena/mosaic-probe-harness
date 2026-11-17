@@ -574,7 +574,7 @@ describe('e2e: 切断と MCP の上限', () => {
   })
 })
 
-type DetailBody = { p_ok: number; render: string; classes: Record<'none' | 'ok' | 'forgot' | 'insufficient' | 'nori', number> }
+type DetailBody = { p_ok: number; judgment: string; confidence: number; render: string; classes: Record<'none' | 'ok' | 'forgot' | 'insufficient' | 'nori', number> }
 const CLASS_KEYS = ['forgot', 'insufficient', 'nori', 'none', 'ok']
 
 async function postDetail(url: string, bytes: Uint8Array, mime: string, query = 'detail=1') {
@@ -594,7 +594,10 @@ describe('e2e: 詳細（detail）と 5 択', () => {
     expect(res.status).toBe(200)
     expect(res.headers.get('content-type')).toContain('application/json')
     const body = JSON.parse(text) as DetailBody
-    expect(Object.keys(body).sort()).toEqual(['classes', 'p_ok', 'render'])
+    expect(Object.keys(body).sort()).toEqual(['classes', 'confidence', 'judgment', 'p_ok', 'render'])
+    // 総合判断は 5 択で最も確率が高い答え（かけ忘れ 0.9）で、確率はその生の値
+    expect(body.judgment).toBe('forgot')
+    expect(body.confidence).toBeCloseTo(0.9, 6)
     expect(Object.keys(body.classes).sort()).toEqual([...CLASS_KEYS].sort())
     expect(body.p_ok).toBeCloseTo(P_NG, 6)
     expect(body.render).toBe('ラスター')

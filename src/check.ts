@@ -1,5 +1,5 @@
 import type { Config } from './config.ts'
-import { CheckError, type ClassProbs, type Detail } from './types.ts'
+import { CheckError, type ClassProbs, type Detail, type Judgment } from './types.ts'
 
 // 他モジュール（layers.ts / images.ts）と構造的に同じ形。未実装でも型が通るよう、ここに書き下す。
 export interface CheckDeps {
@@ -121,5 +121,16 @@ export async function checkDetail(
   signal?: AbortSignal,
 ): Promise<Detail> {
   const { p, worst } = await runCheck(data, cfg, deps, signal)
-  return { pOk: p, render: worst.description, classes: classesOf(worst.probs, cfg) }
+  const classes = classesOf(worst.probs, cfg)
+  return { pOk: p, ...judgmentOf(classes), render: worst.description, classes }
+}
+
+// 同率のときの優先順（重い順）。見逃しを避けるため、問題の種類を先に置く。
+const JUDGMENT_ORDER: Judgment[] = ['forgot', 'insufficient', 'nori', 'ok', 'none']
+
+/** 5 択の確率から総合判断（最も確率が高い答え）とその確率を決める。同率なら重い順。 */
+export function judgmentOf(classes: Detail['classes']): { judgment: Judgment; confidence: number } {
+  let best: Judgment = 'forgot'
+  for (const j of JUDGMENT_ORDER) if (classes[j] > classes[best]) best = j
+  return { judgment: best, confidence: classes[best] }
 }

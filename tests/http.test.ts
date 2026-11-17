@@ -286,11 +286,15 @@ describe('createHttpServer', () => {
 
 const DETAIL: Detail = {
   pOk: 0.12,
+  judgment: 'forgot',
+  confidence: 0.62,
   render: 'モザイク名のレイヤーを非表示',
   classes: { none: 0.01, ok: 0.1, forgot: 0.62, insufficient: 0.2, nori: 0.07 },
 }
 const DETAIL_BODY = {
   p_ok: 0.12,
+  judgment: 'forgot',
+  confidence: 0.62,
   render: 'モザイク名のレイヤーを非表示',
   classes: { none: 0.01, ok: 0.1, forgot: 0.62, insufficient: 0.2, nori: 0.07 },
 }
@@ -371,6 +375,8 @@ describe('createHttpServer detail', () => {
       { ...DETAIL, pOk: NaN },
       { ...DETAIL, classes: { ...DETAIL.classes, forgot: -0.1 } },
       { ...DETAIL, classes: { ...DETAIL.classes, nori: Infinity } },
+      { ...DETAIL, confidence: 1.5 },
+      { ...DETAIL, judgment: 'unknown' as Detail['judgment'] },
     ]
     for (const bad of bads) {
       const { base } = await start({}, { check: okCheck, checkDetail: async () => bad })

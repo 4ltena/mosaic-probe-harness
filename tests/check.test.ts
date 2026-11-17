@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { check, checkDetail, type CheckDeps } from '../src/check.ts'
+import { check, checkDetail, judgmentOf, type CheckDeps } from '../src/check.ts'
 import { defaultConfig } from '../src/config.ts'
 import { CheckError, type ClassProbs } from '../src/types.ts'
 
@@ -272,6 +272,9 @@ describe('checkDetail', () => {
     expect(d.pOk).toBe(0.2)
     expect(d.render).toBe('v1')
     expect(d.classes).toEqual({ none: 0.02, ok: 0.2, forgot: 0.5, insufficient: 0.2, nori: 0.08 })
+    // 総合判断は、その描画の 5 択で最も確率が高い答えと、その確率
+    expect(d.judgment).toBe('forgot')
+    expect(d.confidence).toBe(0.5)
   })
 
   it('check は checkDetail.pOk と一致する', async () => {
@@ -359,5 +362,41 @@ describe('checkDetail', () => {
     if (res.ok) return
     expect(res.e).toBeInstanceOf(CheckError)
     expect((res.e as CheckError).kind).toBe('vlm')
+  })
+})
+
+describe('judgmentOf（総合判断）', () => {
+  const c = (none: number, ok: number, forgot: number, insufficient: number, nori: number) => ({ none, ok, forgot, insufficient, nori })
+
+  it('最も確率が高い答えと、その確率を返す', () => {
+    expect(judgmentOf(c(0.7, 0.2, 0.05, 0.03, 0.02))).toEqual({ judgment: 'none', confidence: 0.7 })
+    expect(judgmentOf(c(0.05, 0.8, 0.05, 0.05, 0.05))).toEqual({ judgment: 'ok', confidence: 0.8 })
+    expect(judgmentOf(c(0.0, 0.1, 0.1, 0.7, 0.1))).toEqual({ judgment: 'insufficient', confidence: 0.7 })
+    expect(judgmentOf(c(0.0, 0.1, 0.1, 0.1, 0.7))).toEqual({ judgment: 'nori', confidence: 0.7 })
+  })
+
+  it('同率は重い順（forgot > insufficient > nori > ok > none）に選ぶ', () => {
+    expect(judgmentOf(c(0.2, 0.2, 0.2, 0.2, 0.2)).judgment).toBe('forgot')
+    expect(judgmentOf(c(0.2, 0.2, 0, 0.3, 0.3)).judgment).toBe('insufficient')
+    expect(judgmentOf(c(0.25, 0.25, 0, 0, 0.5)).judgment).toBe('nori')
+    expect(judgmentOf(c(0.5, 0.5, 0, 0, 0)).judgment).toBe('ok')
+  })
+
+  it('確率は classes の値そのもの（正規化や較正をしない）', () => {
+    expect(judgmentOf(c(0.1, 0.1, 0.4, 0.1, 0.1)).confidence).toBe(0.4)
+  })
+
+  it('kinds が無い judge（古いフェイク）は、ng を forgot として扱った結果に従う', async () => {
+    const d = await checkDetail(
+      SRC,
+      cfg,
+      deps({
+        renderVariants: renders(1) as CheckDeps['renderVariants'],
+        judge: async () => ({ none: 0.1, ok: 0.2, ng: 0.7 }),
+        pOk: (p) => p.ok,
+      }),
+    )
+    expect(d.judgment).toBe('forgot')
+    expect(d.confidence).toBe(0.7)
   })
 })
