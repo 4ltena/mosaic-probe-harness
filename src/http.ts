@@ -2,12 +2,34 @@ import { createHash } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { Config } from './config.ts'
 import { authOk, corsHeaders, ipAllowed } from './net.ts'
-import { CheckError, HTTP_STATUS_OF_KIND } from './types.ts'
+import { CheckError, type Detail, HTTP_STATUS_OF_KIND } from './types.ts'
 
 export interface Handlers {
   check(bytes: Uint8Array, signal: AbortSignal): Promise<number>
+  /** `?detail=1` の応答。無ければ detail 要求は 501。 */
+  checkDetail?(bytes: Uint8Array, signal: AbortSignal): Promise<Detail>
   /** parsedBody は POST の上限つき読み取り・JSON 解析の結果（GET など本文を読まない要求では無い）。 */
   mcp?: (req: IncomingMessage, res: ServerResponse, parsedBody?: unknown) => Promise<void>
+}
+
+/** 詳細応答の本文（REST と MCP で共通）。 */
+export interface DetailJson {
+  p_ok: number
+  render: string
+  classes: { none: number; ok: number; forgot: number; insufficient: number; nori: number }
+}
+
+/** 詳細を本文の形にする。値が非有限・範囲外なら undefined（数値も JSON も返さない）。 */
+export function detailJson(d: Detail): DetailJson | undefined {
+  const ok = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1
+  const c = d.classes
+  if (!ok(d.pOk) || typeof d.render !== 'string' || !c) return undefined
+  if (!ok(c.none) || !ok(c.ok) || !ok(c.forgot) || !ok(c.insufficient) || !ok(c.nori)) return undefined
+  return {
+    p_ok: d.pOk,
+    render: d.render,
+    classes: { none: c.none, ok: c.ok, forgot: c.forgot, insufficient: c.insufficient, nori: c.nori },
+  }
 }
 
 // JSON の包み（キー名など）の余裕。base64 の上限計算に足す。
@@ -90,6 +112,10 @@ export function createHttpServer(
     res: ServerResponse,
     meta: { sha: string; size: number },
   ): Promise<void> {
+    const q = new URL(req.url ?? '/', 'http://localhost').searchParams.get('detail')
+    const wantDetail = q === '1' || q === 'true'
+    const cd = wantDetail ? h.checkDetail : undefined
+    if (wantDetail && !cd) return sendJson(res, 501, { error: 'not_implemented' })
     const isJson = String(req.headers['content-type'] ?? '').startsWith('application/json')
     const limit = isJson ? Math.ceil((maxBytes * 4) / 3) + JSON_SLACK : maxBytes
     const body = await readBody(req, limit)
@@ -121,6 +147,11 @@ export function createHttpServer(
       if (!res.writableFinished) ac.abort()
     })
     try {
+      if (cd) {
+        const d = detailJson(await cd(bytes, ac.signal))
+        if (!d) return sendJson(res, 500, { error: 'internal' })
+        return sendJson(res, 200, d)
+      }
       const n = await h.check(bytes, ac.signal)
       if (typeof n !== 'number' || !Number.isFinite(n) || n < 0 || n > 1) {
         return sendJson(res, 500, { error: 'internal' })

@@ -13,10 +13,13 @@ import { Calibrator, pOk } from '../src/probability.ts'
 import { buildServer } from '../src/server.ts'
 import type { ClassProbs } from '../src/types.ts'
 
-// 偽の llama-server（ローカルのみ）が返す A/B/C の質量と、それから得られる期待値。
-// 赤い画像は「未処理（C）」、それ以外は「処理済み（B）」として答える。
-const MASS_OK = { A: 0.01, B: 0.97, C: 0.02 }
-const MASS_NG = { A: 0.01, B: 0.02, C: 0.97 }
+// 偽の llama-server（ローカルのみ）が返す A〜E（対象なし・処理済み・かけ忘れ・不十分・ノリ）の質量と、それから得られる期待値。
+// 赤い画像は「かけ忘れ（C）」、黒い画像は「ノリ（E）」、それ以外は「処理済み（B）」として答える。
+type Mass = Record<'A' | 'B' | 'C' | 'D' | 'E', number>
+const MASS_OK: Mass = { A: 0.01, B: 0.97, C: 0.01, D: 0.005, E: 0.005 }
+const MASS_FORGOT: Mass = { A: 0.01, B: 0.02, C: 0.9, D: 0.05, E: 0.02 }
+const MASS_NORI: Mass = { A: 0.01, B: 0.02, C: 0.02, D: 0.05, E: 0.9 }
+const topLabel = (m: Mass): keyof Mass => (Object.keys(m) as (keyof Mass)[]).reduce((a, b) => (m[b] > m[a] ? b : a))
 const PROBS_OK: ClassProbs = { none: 0.01, ok: 0.97, ng: 0.02 }
 const PROBS_NG: ClassProbs = { none: 0.01, ok: 0.02, ng: 0.97 }
 const P_OK = pOk(PROBS_OK, new Calibrator())
@@ -86,11 +89,13 @@ async function listen(server: Server): Promise<string> {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
-/** data URI の JPEG の平均色が赤寄りかどうか。 */
-async function isRed(dataUri: string): Promise<boolean> {
+/** data URI の JPEG の平均色から偽の答えを決める。赤寄り=かけ忘れ、黒寄り=ノリ、それ以外=処理済み。 */
+async function massOf(dataUri: string): Promise<Mass> {
   const buf = Buffer.from(dataUri.slice(dataUri.indexOf(',') + 1), 'base64')
   const px = await sharp(buf).removeAlpha().resize(1, 1).raw().toBuffer()
-  return px[0]! > 128 && px[1]! < 128
+  if (px[0]! > 128 && px[1]! < 128) return MASS_FORGOT
+  if (px[0]! < 32 && px[1]! < 32 && px[2]! < 32) return MASS_NORI
+  return MASS_OK
 }
 
 async function startFake(): Promise<Fake> {
@@ -126,9 +131,8 @@ async function startFake(): Promise<Fake> {
         return
       }
       const url = body.messages[1]!.content[0]!.image_url!.url
-      const red = await isRed(url)
-      const mass = red ? MASS_NG : MASS_OK
-      const token = red ? 'C' : 'B'
+      const mass = await massOf(url)
+      const token = topLabel(mass)
       res.setHeader('content-type', 'application/json')
       res.end(
         JSON.stringify({
@@ -141,7 +145,7 @@ async function startFake(): Promise<Fake> {
                 content: [
                   {
                     token,
-                    logprob: Math.log(mass[token as 'B' | 'C']),
+                    logprob: Math.log(mass[token]),
                     top_logprobs: Object.entries(mass).map(([t, p]) => ({ token: t, logprob: Math.log(p) })),
                   },
                 ],
@@ -564,6 +568,139 @@ describe('e2e: 切断と MCP の上限', () => {
       expect(result.isError).toBe(true)
       expect(text.startsWith('error:')).toBe(true)
       expect(fake.judgeCalls).toBe(0)
+    } finally {
+      await client.close()
+    }
+  })
+})
+
+type DetailBody = { p_ok: number; render: string; classes: Record<'none' | 'ok' | 'forgot' | 'insufficient' | 'nori', number> }
+const CLASS_KEYS = ['forgot', 'insufficient', 'nori', 'none', 'ok']
+
+async function postDetail(url: string, bytes: Uint8Array, mime: string, query = 'detail=1') {
+  return fetch(`${url}/v1/check?${query}`, {
+    method: 'POST',
+    headers: { 'content-type': mime, ...AUTH },
+    body: new Uint8Array(bytes),
+  })
+}
+
+describe('e2e: 詳細（detail）と 5 択', () => {
+  it('REST の detail=1 は p_ok・描画の説明・生の 5 択の確率を JSON で返す', async () => {
+    const fake = await startFake()
+    const { url, lines } = await startHarness(fake)
+    const res = await postDetail(url, await pngOf('#ff0000'), 'image/png')
+    const text = await res.text()
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toContain('application/json')
+    const body = JSON.parse(text) as DetailBody
+    expect(Object.keys(body).sort()).toEqual(['classes', 'p_ok', 'render'])
+    expect(Object.keys(body.classes).sort()).toEqual([...CLASS_KEYS].sort())
+    expect(body.p_ok).toBeCloseTo(P_NG, 6)
+    expect(body.render).toBe('ラスター')
+    expect(body.classes.forgot).toBeCloseTo(0.9, 6)
+    expect(body.classes.insufficient).toBeCloseTo(0.05, 6)
+    expect(body.classes.nori).toBeCloseTo(0.02, 6)
+    expect(body.classes.none).toBeCloseTo(0.01, 6)
+    expect(body.classes.ok).toBeCloseTo(0.02, 6)
+    expect(lines.join('\n')).not.toContain(KEY)
+  })
+
+  it('PSD の detail は最悪の描画（モザイク層を外した描画）の説明と、その種類の確率を返す', async () => {
+    const fake = await startFake()
+    const { url } = await startHarness(fake)
+    const res = await postDetail(url, Buffer.from(psdWithMosaic()), 'image/vnd.adobe.photoshop')
+    const body = JSON.parse(await res.text()) as DetailBody
+    expect(res.status).toBe(200)
+    expect(body.render).toBe('モザイク名のレイヤーを非表示')
+    expect(body.p_ok).toBeCloseTo(P_NG, 6)
+    expect(body.classes.forgot).toBeCloseTo(0.9, 6)
+  })
+
+  it('detail=true も詳細を返し、既定（detail 無し・detail=0）は数値だけのまま', async () => {
+    const fake = await startFake()
+    const { url } = await startHarness(fake)
+    const png = await pngOf('#ffffff')
+    const asTrue = JSON.parse(await (await postDetail(url, png, 'image/png', 'detail=true')).text()) as DetailBody
+    expect(asTrue.p_ok).toBeCloseTo(P_OK, 6)
+    // 既定（クエリ無し）と detail=0 は数値 1 個だけ
+    const plain = await fetch(`${url}/v1/check`, {
+      method: 'POST',
+      headers: { 'content-type': 'image/png', ...AUTH },
+      body: png,
+    })
+    const zero = await postDetail(url, png, 'image/png', 'detail=0')
+    for (const res of [plain, zero]) {
+      const text = await res.text()
+      expect(res.status).toBe(200)
+      expect(text).toMatch(NUMBER_ONLY)
+      expect(Number(text)).toBeCloseTo(P_OK, 6)
+    }
+  })
+
+  it('黒い枠（ノリ）は既定では問題として数え、nori の確率を返す。NORI_AS_OK では ok に移る', async () => {
+    const fake = await startFake()
+    const black = await pngOf('#000000')
+    const strict = await startHarness(fake)
+    const sb = JSON.parse(await (await postDetail(strict.url, black, 'image/png')).text()) as DetailBody
+    expect(sb.p_ok).toBeCloseTo(P_NG, 6)
+    expect(sb.classes.nori).toBeCloseTo(0.9, 6)
+    expect(sb.classes.ok).toBeCloseTo(0.02, 6)
+
+    const lenient = await startHarness(fake, { noriAsOk: true })
+    const lb = JSON.parse(await (await postDetail(lenient.url, black, 'image/png')).text()) as DetailBody
+    // nori を ok に移した後の値で p_ok を出す。classes は移動前の生の値
+    expect(lb.p_ok).toBeCloseTo(pOk({ none: 0.01, ok: 0.92, ng: 0.07 }, new Calibrator()), 6)
+    expect(lb.p_ok).toBeGreaterThan(sb.p_ok)
+    expect(lb.classes.nori).toBeCloseTo(0.9, 6)
+    expect(lb.classes.ok).toBeCloseTo(0.02, 6)
+  })
+
+  it('MCP の detail: true は同じ詳細 JSON の文字列を 1 要素で返す', async () => {
+    const fake = await startFake()
+    const { url } = await startHarness(fake)
+    const client = new Client({ name: 'e2e', version: '0.0.0' })
+    await client.connect(new StreamableHTTPClientTransport(new URL(`${url}/mcp`), { requestInit: { headers: AUTH } }))
+    try {
+      const result = await client.callTool({
+        name: 'check_mosaic',
+        arguments: { image_base64: (await pngOf('#ff0000')).toString('base64'), detail: true },
+      })
+      const content = result.content as { type: string; text?: string }[]
+      expect(result.isError).toBeFalsy()
+      expect(content).toHaveLength(1)
+      expect(content[0]?.type).toBe('text')
+      const body = JSON.parse(content[0]?.text ?? '') as DetailBody
+      expect(body.p_ok).toBeCloseTo(P_NG, 6)
+      expect(body.render).toBe('ラスター')
+      expect(body.classes.forgot).toBeCloseTo(0.9, 6)
+    } finally {
+      await client.close()
+    }
+  })
+
+  it('判定モデルが停止していると detail でも失敗。数値も JSON も返さない（REST は 502、MCP は isError）', async () => {
+    const dead = await startHarness({ url: await closedUrl() })
+    const png = await pngOf('#ffffff')
+    const res = await postDetail(dead.url, png, 'image/png')
+    const text = await res.text()
+    expect(res.status).toBe(502)
+    expect(JSON.parse(text)).toMatchObject({ error: 'vlm' })
+    expect(text).not.toMatch(NUMBER_ONLY)
+    expect(text).not.toContain('p_ok')
+
+    const client = new Client({ name: 'e2e', version: '0.0.0' })
+    await client.connect(new StreamableHTTPClientTransport(new URL(`${dead.url}/mcp`), { requestInit: { headers: AUTH } }))
+    try {
+      const result = await client.callTool({
+        name: 'check_mosaic',
+        arguments: { image_base64: png.toString('base64'), detail: true },
+      })
+      const mtext = (result.content as { text?: string }[])[0]?.text ?? ''
+      expect(result.isError).toBe(true)
+      expect(mtext.startsWith('error:')).toBe(true)
+      expect(mtext).not.toContain('p_ok')
+      expect(Number.isNaN(Number(mtext))).toBe(true)
     } finally {
       await client.close()
     }

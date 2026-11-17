@@ -3,7 +3,7 @@ import { resolve } from 'node:path'
 import type { Server } from 'node:http'
 import { pathToFileURL } from 'node:url'
 import { streamSimple } from '@earendil-works/pi-ai/api/openai-completions'
-import { check } from './check.ts'
+import { check, checkDetail, type CheckDeps } from './check.ts'
 import { assertSafeBind, loadConfig, type Config } from './config.ts'
 import { createGate } from './gate.ts'
 import { normalize } from './images.ts'
@@ -60,28 +60,32 @@ export function buildServer(cfg: Config, overrides: ServerOverrides = {}): Serve
   // 同時リクエスト数 = 総スロット数（台数 × スロット数）。1 台・スロット 1 なら従来どおり 1
   const slots = cfg.vlmBaseUrls.length * cfg.vlmSlotsPerBackend
   const gate = createGate(slots, cfg.queueTimeoutMs)
-  const gatedCheck = (bytes: Uint8Array, signal: AbortSignal) =>
-    gate.run(
-      () =>
+  const deps: CheckDeps = {
+    renderVariants,
+    normalize,
+    judge,
+    pOk: (p) => pOk(p, cal),
+    recheck,
+    log,
+  }
+  // 判定（数値）と詳細は同じゲート・同じ signal で包む
+  const gated =
+    <T>(fn: (bytes: Uint8Array, signal: AbortSignal) => Promise<T>) =>
+    (bytes: Uint8Array, signal: AbortSignal) =>
+      gate.run(
         // Buffer の view を、先頭から始まる独立した Uint8Array にする。
         // layers.ts は data.slice().buffer を使うため、プールの一部を指す Buffer だと誤って読む。
-        check(
-          new Uint8Array(bytes),
-          cfg,
-          {
-            renderVariants,
-            normalize,
-            judge,
-            pOk: (p) => pOk(p, cal),
-            recheck,
-            log,
-          },
-          signal,
-        ),
-      signal,
-    )
+        () => fn(new Uint8Array(bytes), signal),
+        signal,
+      )
+  const gatedCheck = gated((b, s) => check(b, cfg, deps, s))
+  const gatedDetail = gated((b, s) => checkDetail(b, cfg, deps, s))
 
-  return createHttpServer(cfg, { check: gatedCheck, mcp: createMcpHandler(gatedCheck, cfg) }, log)
+  return createHttpServer(
+    cfg,
+    { check: gatedCheck, checkDetail: gatedDetail, mcp: createMcpHandler(gatedCheck, cfg, gatedDetail) },
+    log,
+  )
 }
 
 async function main(): Promise<void> {

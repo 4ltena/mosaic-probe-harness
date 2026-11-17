@@ -5,9 +5,10 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { afterEach, describe, expect, it } from 'vitest'
 import { defaultConfig } from '../src/config.ts'
 import { createMcpHandler } from '../src/mcp.ts'
-import { CheckError } from '../src/types.ts'
+import { CheckError, type Detail } from '../src/types.ts'
 
 type Check = (bytes: Uint8Array, signal: AbortSignal) => Promise<number>
+type CheckDetail = (bytes: Uint8Array, signal: AbortSignal) => Promise<Detail>
 
 const servers: Server[] = []
 const clients: Client[] = []
@@ -18,8 +19,8 @@ afterEach(async () => {
 })
 
 /** ローカルの偽サーバーに /mcp を載せ、SDK の Client で接続する。 */
-async function connect(check: Check): Promise<Client> {
-  const handler = createMcpHandler(check, defaultConfig({ maxImageMb: 15 }))
+async function connect(check: Check, checkDetail?: CheckDetail): Promise<Client> {
+  const handler = createMcpHandler(check, defaultConfig({ maxImageMb: 15 }), checkDetail)
   const server = createServer((req, res) => {
     if (req.url === '/mcp') {
       handler(req, res).catch(() => {
@@ -109,5 +110,88 @@ describe('mcp', () => {
     const second = await client.callTool({ name: 'check_mosaic', arguments: { image_base64: PNG_B64 } })
     expect(Number(textOf(first))).toBe(0.7)
     expect(Number(textOf(second))).toBe(0.7)
+  })
+})
+
+const DETAIL: Detail = {
+  pOk: 0.12,
+  render: 'モザイク名のレイヤーを非表示',
+  classes: { none: 0.01, ok: 0.1, forgot: 0.62, insufficient: 0.2, nori: 0.07 },
+}
+const DETAIL_BODY = {
+  p_ok: 0.12,
+  render: 'モザイク名のレイヤーを非表示',
+  classes: { none: 0.01, ok: 0.1, forgot: 0.62, insufficient: 0.2, nori: 0.07 },
+}
+
+describe('mcp detail', () => {
+  it('ツールは check_mosaic 1 つのままで、detail 引数を持つ', async () => {
+    const client = await connect(async () => 0.5, async () => DETAIL)
+    const { tools } = await client.listTools()
+    expect(tools.map((t) => t.name)).toEqual(['check_mosaic'])
+    expect(JSON.stringify(tools[0]?.inputSchema)).toContain('detail')
+  })
+
+  it('detail: true は詳細 JSON の文字列（1 要素）を返す', async () => {
+    const client = await connect(async () => 0.5, async () => DETAIL)
+    const result = await client.callTool({
+      name: 'check_mosaic',
+      arguments: { image_base64: PNG_B64, detail: true },
+    })
+    expect(result.isError).not.toBe(true)
+    expect(result.content).toHaveLength(1)
+    expect(JSON.parse(textOf(result))).toEqual(DETAIL_BODY)
+  })
+
+  it('detail: true でも checkDetail が無ければ数値の文字列', async () => {
+    const client = await connect(async () => 0.25)
+    const result = await client.callTool({
+      name: 'check_mosaic',
+      arguments: { image_base64: PNG_B64, detail: true },
+    })
+    expect(result.isError).not.toBe(true)
+    expect(textOf(result)).toBe('0.25')
+  })
+
+  it('detail 無し・false は数値だけ（checkDetail は呼ばれない）', async () => {
+    let detailCalls = 0
+    const client = await connect(
+      async () => 0.4,
+      async () => (detailCalls++, DETAIL),
+    )
+    for (const args of [{ image_base64: PNG_B64 }, { image_base64: PNG_B64, detail: false }]) {
+      const result = await client.callTool({ name: 'check_mosaic', arguments: args })
+      expect(textOf(result)).toBe('0.4')
+    }
+    expect(detailCalls).toBe(0)
+  })
+
+  it('detail の失敗は isError、本文は error: で始まり、JSON も数値も無い', async () => {
+    const client = await connect(
+      async () => 0.5,
+      async () => {
+        throw new CheckError('vlm', 'upstream failed')
+      },
+    )
+    const result = await client.callTool({
+      name: 'check_mosaic',
+      arguments: { image_base64: PNG_B64, detail: true },
+    })
+    expect(result.isError).toBe(true)
+    const text = textOf(result)
+    expect(text.startsWith('error:')).toBe(true)
+    expect(text).toContain('vlm')
+    expect(Number(text)).toBeNaN()
+    expect(text).not.toContain('p_ok')
+  })
+
+  it('detail の範囲外の値は isError で、数値も JSON も返さない', async () => {
+    const client = await connect(async () => 0.5, async () => ({ ...DETAIL, pOk: 2 }))
+    const result = await client.callTool({
+      name: 'check_mosaic',
+      arguments: { image_base64: PNG_B64, detail: true },
+    })
+    expect(result.isError).toBe(true)
+    expect(textOf(result)).not.toContain('p_ok')
   })
 })

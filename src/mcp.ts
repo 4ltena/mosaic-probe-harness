@@ -3,7 +3,8 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { z } from 'zod'
 import type { Config } from './config.ts'
-import { CheckError } from './types.ts'
+import { detailJson } from './http.ts'
+import { CheckError, type Detail } from './types.ts'
 
 const DATA_PREFIX = /^data:[^;,]*;base64,/
 // ponytail: 空白の除去と文字種の検査だけ。MIME 種別は見ない（画像の正当性は normalize が判定する）
@@ -28,10 +29,12 @@ function decode(input: string, maxMb: number): Uint8Array {
  * MCP（Streamable HTTP、ステートレス・JSON 応答）のハンドラを作る。
  * リクエストごとに McpServer と transport を作り、応答が閉じたら破棄する。
  * parsedBody は http.ts が上限つきで読んで JSON 解析した本文（SDK の既定の 4 MiB 上限を使わないため）。
+ * checkDetail があり detail: true のときだけ、成功の本文は詳細 JSON の文字列になる。
  */
 export function createMcpHandler(
   check: (bytes: Uint8Array, signal: AbortSignal) => Promise<number>,
   cfg: Config,
+  checkDetail?: (bytes: Uint8Array, signal: AbortSignal) => Promise<Detail>,
 ): (req: IncomingMessage, res: ServerResponse, parsedBody?: unknown) => Promise<void> {
   return async (req, res, parsedBody) => {
     // 切断されたら判定も止める（判定の signal）
@@ -44,11 +47,19 @@ export function createMcpHandler(
       'check_mosaic',
       {
         description: '画像がモザイク処理済み（または処理不要）である確率を 0〜1 で返す',
-        inputSchema: { image_base64: z.string() },
+        inputSchema: {
+          image_base64: z.string(),
+          detail: z.boolean().optional().describe('true なら p_ok・render・classes の詳細 JSON を返す'),
+        },
       },
-      async ({ image_base64 }) => {
+      async ({ image_base64, detail }) => {
         try {
           const bytes = decode(image_base64, cfg.maxImageMb)
+          if (detail === true && checkDetail) {
+            const d = detailJson(await checkDetail(bytes, ac.signal))
+            if (!d) throw new CheckError('internal', '判定値が範囲外です')
+            return { content: [{ type: 'text', text: JSON.stringify(d) }] }
+          }
           const n = await check(bytes, ac.signal)
           if (!Number.isFinite(n) || n < 0 || n > 1) throw new CheckError('internal', '判定値が範囲外です')
           return { content: [{ type: 'text', text: String(n) }] }

@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createHttpServer, type Handlers } from '../src/http.ts'
 import { defaultConfig } from '../src/config.ts'
-import { CheckError, HTTP_STATUS_OF_KIND } from '../src/types.ts'
+import { CheckError, type Detail, HTTP_STATUS_OF_KIND } from '../src/types.ts'
 
 const LOOPBACK = ['127.0.0.0/8', '::1/128']
 const closers: (() => Promise<void>)[] = []
@@ -281,5 +281,136 @@ describe('createHttpServer', () => {
     ac.abort()
     await req
     await abortedP
+  })
+})
+
+const DETAIL: Detail = {
+  pOk: 0.12,
+  render: 'モザイク名のレイヤーを非表示',
+  classes: { none: 0.01, ok: 0.1, forgot: 0.62, insufficient: 0.2, nori: 0.07 },
+}
+const DETAIL_BODY = {
+  p_ok: 0.12,
+  render: 'モザイク名のレイヤーを非表示',
+  classes: { none: 0.01, ok: 0.1, forgot: 0.62, insufficient: 0.2, nori: 0.07 },
+}
+
+describe('createHttpServer detail', () => {
+  it('?detail=1 は詳細 JSON（p_ok・render・classes の 5 種）を返す', async () => {
+    let detailCalls = 0
+    let checkCalls = 0
+    const { base } = await start(
+      {},
+      {
+        check: async () => (checkCalls++, 0.5),
+        checkDetail: async () => (detailCalls++, DETAIL),
+      },
+    )
+    const r = await fetch(`${base}/v1/check?detail=1`, { method: 'POST', body: new Uint8Array([1, 2, 3]) })
+    expect(r.status).toBe(200)
+    expect(r.headers.get('content-type')).toContain('application/json')
+    expect(await r.json()).toEqual(DETAIL_BODY)
+    expect(detailCalls).toBe(1)
+    expect(checkCalls).toBe(0)
+  })
+
+  it('?detail=true も詳細を返す', async () => {
+    const { base } = await start({}, { check: okCheck, checkDetail: async () => DETAIL })
+    const r = await fetch(`${base}/v1/check?detail=true`, { method: 'POST', body: 'x' })
+    expect(r.status).toBe(200)
+    expect(await r.json()).toEqual(DETAIL_BODY)
+  })
+
+  it('JSON の image_base64 でも ?detail=1 が効く', async () => {
+    let got: Uint8Array | undefined
+    const { base } = await start(
+      {},
+      {
+        check: okCheck,
+        checkDetail: async (b) => ((got = b), DETAIL),
+      },
+    )
+    const body = JSON.stringify({ image_base64: Buffer.from('PNGDATA').toString('base64') })
+    const r = await fetch(`${base}/v1/check?detail=1`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    })
+    expect(r.status).toBe(200)
+    expect(await r.json()).toEqual(DETAIL_BODY)
+    expect(Buffer.from(got!).toString()).toBe('PNGDATA')
+  })
+
+  it('detail=0 や detail 無しは数値だけ（checkDetail は呼ばれない）', async () => {
+    let detailCalls = 0
+    const { base } = await start(
+      {},
+      {
+        check: async () => 0.33,
+        checkDetail: async () => (detailCalls++, DETAIL),
+      },
+    )
+    for (const url of [`${base}/v1/check?detail=0`, `${base}/v1/check`, `${base}/v1/check?detail=yes`]) {
+      const r = await fetch(url, { method: 'POST', body: 'x' })
+      expect(r.status).toBe(200)
+      expect(await r.text()).toBe(JSON.stringify(0.33))
+    }
+    expect(detailCalls).toBe(0)
+  })
+
+  it('checkDetail が無い状態で ?detail=1 は 501', async () => {
+    const { base } = await start({}, { check: okCheck })
+    const r = await fetch(`${base}/v1/check?detail=1`, { method: 'POST', body: 'x' })
+    expect(r.status).toBe(501)
+    expect(await r.json()).toEqual({ error: 'not_implemented' })
+  })
+
+  it('詳細の範囲外・非有限の値は 500 で、JSON も数値も返さない', async () => {
+    const bads: Detail[] = [
+      { ...DETAIL, pOk: 1.5 },
+      { ...DETAIL, pOk: NaN },
+      { ...DETAIL, classes: { ...DETAIL.classes, forgot: -0.1 } },
+      { ...DETAIL, classes: { ...DETAIL.classes, nori: Infinity } },
+    ]
+    for (const bad of bads) {
+      const { base } = await start({}, { check: okCheck, checkDetail: async () => bad })
+      const r = await fetch(`${base}/v1/check?detail=1`, { method: 'POST', body: 'x' })
+      expect(r.status).toBe(500)
+      const text = await r.text()
+      expect(text).toBe(JSON.stringify({ error: 'internal' }))
+      expect(text).not.toContain('p_ok')
+    }
+  })
+
+  it('詳細の CheckError は kind に応じた状態で、p_ok を含まない', async () => {
+    const { base } = await start(
+      {},
+      {
+        check: okCheck,
+        checkDetail: async () => {
+          throw new CheckError('vlm', 'upstream')
+        },
+      },
+    )
+    const r = await fetch(`${base}/v1/check?detail=1`, { method: 'POST', body: 'x' })
+    expect(r.status).toBe(502)
+    const body = (await r.json()) as Record<string, unknown>
+    expect(body.error).toBe('vlm')
+    expect(body).not.toHaveProperty('p_ok')
+  })
+
+  it('詳細の CheckError 以外の例外は 500 に包み、内部メッセージを出さない', async () => {
+    const { base } = await start(
+      {},
+      {
+        check: okCheck,
+        checkDetail: async () => {
+          throw new Error('SECRETLEAK')
+        },
+      },
+    )
+    const r = await fetch(`${base}/v1/check?detail=1`, { method: 'POST', body: 'x' })
+    expect(r.status).toBe(500)
+    expect(await r.text()).not.toContain('SECRETLEAK')
   })
 })
