@@ -15,6 +15,8 @@ export interface Config {
   vlmExtraBody: Record<string, unknown>
   rulesPath: string
   temperature: number // 分類 logits を割る温度。1 より大きいと確率が柔らかくなる
+  /** true なら nori（黒い帯・枠）を問題としない（ng でなく ok に数える）。既定 false（要確認として厳しく扱う）。 */
+  noriAsOk: boolean
   // --- 画像 ---
   maxEdge: number
   maxImageMb: number
@@ -93,6 +95,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, root: string = 
     vlmExtraBody: extra,
     rulesPath: existsSync(local) ? local : join(root, 'rules.md'),
     temperature: num(env.CLASSIFY_TEMPERATURE, 1),
+    noriAsOk: env.NORI_AS_OK === '1',
     maxEdge: num(env.MAX_EDGE, 2048),
     maxImageMb: num(env.MAX_IMAGE_MB, 15),
     maxPixels: num(env.MAX_PIXELS, 100_000_000),

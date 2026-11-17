@@ -1,4 +1,4 @@
-// 確率の計算: 3 択の確率から p_ok を作り、較正・信頼度・閾値を扱う。
+// 確率の計算: モデルの確率（none / ok / ng。ng は問題の 3 種類の合計）から p_ok を作り、較正・信頼度・閾値を扱う。
 import { existsSync, readFileSync } from 'node:fs'
 import type { ClassProbs, Label } from './types.ts'
 
