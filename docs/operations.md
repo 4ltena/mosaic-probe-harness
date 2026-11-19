@@ -82,6 +82,7 @@ npx tsx eval/run_eval.ts --labels eval/labels.csv --images eval/images
 | `MAX_ANIM_SECONDS`、`MAX_FRAMES` | GIF・WebP の既定は10秒以下かつ100フレーム以下。TIFF はページ数の上限だけを適用 |
 | `CLASSIFY_TEMPERATURE` | 確率の鋭さ。1 より大きいと過信が和らぎ、保留が増えやすい |
 | `RECHECK=1`（`RECHECK_LO` / `RECHECK_HI` / `RECHECK_MAX_CROPS`） | 境界付近を領域ごとに再判定（既定オフ） |
+| `DETECT=1`（`DETECT_*` / `STYLE_*`） | 検出した部位の切り出しも判定（既定オフ）。詳細は 8 |
 | `calibration.json` | `--write` で作る較正。過信を抑える |
 
 ## 7. 複数台（任意）
@@ -101,7 +102,80 @@ export JUDGES='[
 
 1フレーム約2.5秒を目安とする構成でも、100フレームを直列で処理すると約4分かかります。クライアントのタイムアウトは5分以上を目安にし、実測値に合わせて設定してください。
 
-## 8. 完了と記録
+## 8. 前段の画風分類・部位検出と切り出し判定（任意・既定オフ）
+
+`DETECT=1` にすると、各描画で画風（写真かイラストか）を分類し、画風に合った検出器で部位を見つけ、その切り出しも全体と同じ判定器で判定します。全体と切り出しのうち最も悪い候補が採られるため、`p_ok` は `DETECT=0` の値以下になります。設定項目は [README の設定表](../README.md#前段の画風分類部位検出と切り出し判定試験機能既定オフ)、設計は [docs/design.md](design.md) にあります。`DETECT=0` に戻せば今までの判定に戻ります。
+
+### 8.1 モデルの取得
+
+モデルファイルは `models/` に置きます（Git 管理外。`.gitignore` 済み）。配布元のページで、ライセンスを確かめてから取得します。取得したら必ず SHA-256 を照合し、同じ値を `*_SHA256` に設定します（起動時にも照合します）。コミットを固定して取得します。
+
+| 用途 | 配布元とコミット | ファイル | バイト数 | SHA-256 |
+|---|---|---|---|---|
+| イラスト用の検出器 | `deepghs/anime_censor_detection` `0cf62fd6b28213b40ae0c0055f92e7ae6a96bdc2` | `censor_detect_v1.0_s/model.onnx` | 44,586,353 | `2c2524824d7d320c5619a0a73702a2e2186f619067c823d211e94f7cfe489cba` |
+| 画風の分類器 | `deepghs/anime_real_cls` `097a6c1e9e62866a435810c883a45a7cb2c7077d` | `mobilenetv3_v1.4_dist/model.onnx` | 16,821,153 | `c02d68cc7f56dbcbcd4f41a10df190385c1f963f22c4eefb8d162869800ed3b0` |
+| 写真用の検出器（変換元の重み） | `erax-ai/EraX-Anti-NSFW-V1.1` `90878ab981060833413ae1a24df72f5e1fff66bc` | `erax-anti-nsfw-yolo11m-v1.1.pt` | — | `5ec24336b34c2bc8ba7fab6731a260dce55de26e5db87da2b80fd1fea09b1ec8` |
+
+```sh
+mkdir -p models
+curl -L -o models/anime_det.onnx   https://huggingface.co/deepghs/anime_censor_detection/resolve/0cf62fd6b28213b40ae0c0055f92e7ae6a96bdc2/censor_detect_v1.0_s/model.onnx
+curl -L -o models/style.onnx   https://huggingface.co/deepghs/anime_real_cls/resolve/097a6c1e9e62866a435810c883a45a7cb2c7077d/mobilenetv3_v1.4_dist/model.onnx
+curl -L -o models/erax-anti-nsfw-yolo11m-v1.1.pt   https://huggingface.co/erax-ai/EraX-Anti-NSFW-V1.1/resolve/90878ab981060833413ae1a24df72f5e1fff66bc/erax-anti-nsfw-yolo11m-v1.1.pt
+shasum -a 256 models/*   # Windows: certutil -hashfile <ファイル> SHA256
+```
+
+- イラスト用の検出器の入力は動的な形で、付属情報に `imgsz` がないため、`stretch` で 640×640 に引き伸ばして使います。クラスは `nipple_f`・`penis`・`pussy`、対象は `penis`・`pussy` です。
+- 画風の分類器の入力は `input` [1,3,384,384]、出力は [1,2] で、ラベルは `anime`・`real`（リポジトリの `meta.json` の順）です。
+
+### 8.2 写真用の検出器の変換（EraX の重みから ONNX へ）
+
+EraX の配布は `.pt` だけなので、ONNX に一度だけ自分で変換します。変換用の Python 環境は、ハーネスの実行環境とは別に作ります（例: 仮想環境）。
+
+```python
+# 変換時の版: ultralytics 8.4.215（torch 2.8.0、onnx 1.19.1）
+from ultralytics import YOLO
+YOLO('erax-anti-nsfw-yolo11m-v1.1.pt').export(format='onnx', imgsz=640, dynamic=False, simplify=False)
+```
+
+- 書き出された ONNX は、入力 `images` [1,3,640,640]、出力 `output0` [1,9,8400] です。クラスは `anus`・`make_love`・`nipple`・`penis`・`vagina` で、対象は `penis`・`vagina`・`anus`、前処理は `letterbox` です。
+- 変換後の ONNX のハッシュは、変換した環境の版によって変わります。**組み込み先の組織が、自分で変換したファイルの SHA-256 を `DETECT_PHOTO_SHA256` に記録してください**（参考: 上記の環境の変換では `3a6909939428c7ce2d33b8cc22be66561a6f95c1f09febdd351c85f81993bb19` でした）。`.pt` 側の SHA-256（上の表）で、変換元が同じであることを確かめられます。
+- 書き出された ONNX の付属情報には、ライセンスが `AGPL-3.0 License (https://ultralytics.com/license)`、作者が Ultralytics と入っています。次の「ライセンスの注意」を参照してください。
+
+### 8.3 設定の例
+
+```sh
+# .env（キーは環境変数でも渡せる。値は例）
+DETECT=1
+DETECT_ANIME_MODEL=models/anime_det.onnx
+DETECT_ANIME_SHA256=2c2524824d7d320c5619a0a73702a2e2186f619067c823d211e94f7cfe489cba
+DETECT_PHOTO_MODEL=models/erax-anti-nsfw-yolo11m-v1.1.onnx
+DETECT_PHOTO_SHA256=<自分で変換したファイルの SHA-256>
+STYLE_MODEL=models/style.onnx
+STYLE_SHA256=c02d68cc7f56dbcbcd4f41a10df190385c1f963f22c4eefb8d162869800ed3b0
+```
+
+検出器を 1 つだけ使う場合は `STYLE_MODEL` を設定せず、その検出器を常に使います。起動時に、ファイル・SHA-256・クラス名・試しの推論を検査し、失敗したら変数名を示して止まります（パスと値は出しません）。評価 CLI（`eval/run_eval.ts`）も同じ設定で動きます。`onnxruntime-node` の install スクリプトは、linux/x64 では CUDA 向けのパッケージを取得します。取得を止めるには、環境変数 `ONNXRUNTIME_NODE_INSTALL=skip`（または npm の設定 `onnxruntime-node-install=skip`）を付けて `npm ci` を実行します。**`npm ci --omit=optional` は使わないでください**（`sharp` のプラットフォーム別のバイナリも入らなくなります）。
+
+### 8.4 判定回数と時間の目安
+
+各描画の判定は、全体の 1 回に加えて切り出しが最大 `DETECT_MAX_CROPS` 回です。1 件の要求の判定回数は、最悪で「描画数 ×（1 + `DETECT_MAX_CROPS`）」になります（既定の `DETECT_MAX_CROPS=4` では、PSD の 32 描画で 160 回、GIF の 100 フレームで 500 回）。これに描画ごとの ONNX の推論（`DETECT_THREADS`）が加わります。**クライアントのタイムアウトと `QUEUE_TIMEOUT_S` を見直してください**。時間は実測で確かめ、重いときは `DETECT_MAX_CROPS` を下げます。
+
+### 8.5 回復と較正の写し
+
+- 問題があれば `DETECT=0`（または空）に戻すと、今までの判定になります。
+- `DETECT=1` で `--write` して作った `calibration.json` は、`DETECT=1` 用です。`DETECT=0` に戻すときは、以前のファイルに戻すか、削除して恒等の較正に戻してください。**`--write` の前に、今の `calibration.json` の写しを残してください**。
+- `DETECT=1` では、較正の `a` が 0 より大きいことを求めます（切り出しの NG を見逃さないため）。`a ≤ 0` になる `--write` は、書かずに止まります。
+
+### 8.6 ライセンスの注意
+
+組み込み先の組織は、使うモデルのライセンスを、**法務で確認してから**採用してください。
+
+- **イラスト用の検出器**: Hugging Face の記載は MIT です。ただし YOLOv8 の構成であり、Ultralytics で学習したモデルとみられるため、Ultralytics が主張する AGPL-3.0（学習したモデルにも及ぶという解釈）が及びうる可能性があります。
+- **画風の分類器**: OpenRAIL です。用途の制限が付くので、利用目的が許されるか確かめてください。
+- **写真用の検出器**: 重みの配布は Apache-2.0 ですが、Ultralytics で変換した ONNX の付属情報には AGPL-3.0 と記載されます。同じ Ultralytics の主張が及びうるので、イラスト用と同様に確認してください。
+- **onnxruntime-node**: 本体は MIT です。npm のパッケージには ThirdPartyNotices が含まれません。組み込み先に渡すライセンス一覧には、`microsoft/onnxruntime` の GitHub リポジトリのタグ `v1.31.1` にある `ThirdPartyNotices.txt` を含めてください。
+
+## 9. 完了と記録
 
 - 完了: 0 の目標を、3 回以内の評価で満たしたとき。
 - 未達: 結果の数値（件数・ECE だけ。画像は含めない）を添えて、プロンプトや推論方式の見直しを検討します。
@@ -112,6 +186,7 @@ export JUDGES='[
 次は Git に入れません。公開前に、ステージ済みの全ファイルを読み、秘密情報と DocBase 由来の内容が無いことを確かめます。
 
 - 評価データ・結果: `eval/images/`、`eval/labels.csv`、`eval/results.jsonl`
-- ローカル設定: `calibration.json`、`docbase.json`、`.env`
+- ローカル設定: `calibration.json`、`docbase.json`、`.env`（API キーを含みうる。共有フォルダと配布物に入れない。macOS では `chmod 600 .env`、Windows では利用者だけが読めるフォルダに置く）
+- モデルファイル: `models/`、`*.onnx`（変換元の `.pt` も `models/` に置く。`.gitignore` の対象は `models/` と `*.onnx` で、`models/` の外の `.pt` は対象外なので、ステージしない）
 - DocBase 由来: `rules/docbase/`、`rules.local.md`
 - 認証情報: API キー、DocBase トークン

@@ -13,6 +13,10 @@
 # export MOSAIC_ALLOW_CIDRS=127.0.0.0/8,10.0.0.0/8,192.168.0.0/16
 # export MOSAIC_CORS_ORIGINS=<許可する Origin のカンマ区切り。省略時はキーありで *>
 # export QUEUE_TIMEOUT_S=60
+#
+# 環境変数のかわりに、アプリのルートの .env にも書ける（例は .env.example。環境変数が同じ名前なら環境変数が優先）。
+# .env は Git に入れない。macOS では chmod 600 .env にし、共有フォルダと配布物に含めない。キーは環境変数でも渡せる。
+# 既存の .env は DETECT と関係なく読まれる。前段の検出（DETECT=1）の設定は README を参照。
 
 set -eu
 cd "$(dirname "$0")"
