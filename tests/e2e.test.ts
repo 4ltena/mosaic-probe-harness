@@ -9,21 +9,18 @@ import { writePsd, type Layer } from 'ag-psd'
 import sharp from 'sharp'
 import { afterEach, describe, expect, it } from 'vitest'
 import { DEFAULT_ALLOW_CIDRS, defaultConfig, type Config } from '../src/config.ts'
-import { Calibrator, pOk } from '../src/probability.ts'
+import { sniff } from '../src/images.ts'
 import { buildServer } from '../src/server.ts'
-import type { ClassProbs } from '../src/types.ts'
+import type { Probs4 } from '../src/types.ts'
 
-// 偽の llama-server（ローカルのみ）が返す A〜E（対象なし・処理済み・かけ忘れ・不十分・ノリ）の質量と、それから得られる期待値。
-// 赤い画像は「かけ忘れ（C）」、黒い画像は「ノリ（E）」、それ以外は「処理済み（B）」として答える。
-type Mass = Record<'A' | 'B' | 'C' | 'D' | 'E', number>
-const MASS_OK: Mass = { A: 0.01, B: 0.97, C: 0.01, D: 0.005, E: 0.005 }
-const MASS_FORGOT: Mass = { A: 0.01, B: 0.02, C: 0.9, D: 0.05, E: 0.02 }
-const MASS_NORI: Mass = { A: 0.01, B: 0.02, C: 0.02, D: 0.05, E: 0.9 }
+// 赤はかけ忘れ、黒はノリ、それ以外は処理済みの模擬確率を返す。
+type Mass = Probs4
+const MASS_OK: Mass = { none: 0.01, processed: 0.97, forgot: 0.015, nori: 0.005 }
+const MASS_FORGOT: Mass = { none: 0.01, processed: 0.02, forgot: 0.95, nori: 0.02 }
+const MASS_NORI: Mass = { none: 0.01, processed: 0.02, forgot: 0.02, nori: 0.95 }
 const topLabel = (m: Mass): keyof Mass => (Object.keys(m) as (keyof Mass)[]).reduce((a, b) => (m[b] > m[a] ? b : a))
-const PROBS_OK: ClassProbs = { none: 0.01, ok: 0.97, ng: 0.02 }
-const PROBS_NG: ClassProbs = { none: 0.01, ok: 0.02, ng: 0.97 }
-const P_OK = pOk(PROBS_OK, new Calibrator())
-const P_NG = pOk(PROBS_NG, new Calibrator())
+const P_OK = 0.98 / 0.995
+const P_NG = 0.03 / 0.98
 
 const KEY = 'test-key-123'
 const RULES = resolve('rules.md')
@@ -46,6 +43,8 @@ interface Fake {
   delayMs: number
   maxInFlight: number
   judgeCalls: number
+  tokenizeCalls: number
+  fixedMass?: Mass
   agentCalls: number
 }
 
@@ -89,7 +88,7 @@ async function listen(server: Server): Promise<string> {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
-/** data URI の JPEG の平均色から偽の答えを決める。赤寄り=かけ忘れ、黒寄り=ノリ、それ以外=処理済み。 */
+/** PNG の平均色から偽の答えを決める。赤寄り=かけ忘れ、黒寄り=ノリ、それ以外=処理済み。 */
 async function massOf(dataUri: string): Promise<Mass> {
   const buf = Buffer.from(dataUri.slice(dataUri.indexOf(',') + 1), 'base64')
   const px = await sharp(buf).removeAlpha().resize(1, 1).raw().toBuffer()
@@ -98,11 +97,11 @@ async function massOf(dataUri: string): Promise<Mass> {
   return MASS_OK
 }
 
-async function startFake(): Promise<Fake> {
-  const fake: Fake = { url: '', mode: 'ok', delayMs: 0, maxInFlight: 0, judgeCalls: 0, agentCalls: 0 }
+async function startFake(massForCall?: (call: number) => Mass): Promise<Fake> {
+  const fake: Fake = { url: '', mode: 'ok', delayMs: 0, maxInFlight: 0, judgeCalls: 0, tokenizeCalls: 0, agentCalls: 0 }
   let inFlight = 0
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
-    if (req.method !== 'POST' || req.url !== '/v1/chat/completions') {
+    if (req.method !== 'POST' || (req.url !== '/v1/chat/completions' && req.url !== '/tokenize')) {
       res.statusCode = 404
       res.end()
       return
@@ -110,17 +109,34 @@ async function startFake(): Promise<Fake> {
     const chunks: Buffer[] = []
     for await (const c of req) chunks.push(c as Buffer)
     const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
+      content?: string
       stream?: boolean
       max_tokens?: number
       max_completion_tokens?: number
       messages: { role: string; content: { image_url?: { url: string } }[] }[]
+    }
+    if (req.url === '/tokenize') {
+      fake.tokenizeCalls++
+      const piece = body.content ?? ''
+      res.end(JSON.stringify({ tokens: [{ id: Object.keys(MASS_OK).indexOf(piece), piece }] }))
+      return
+    }
+    const prefix = 'data:image/png;base64,'
+    const images = body.messages.flatMap(({ content }) =>
+      Array.isArray(content) ? content.flatMap(({ image_url }) => image_url ? [image_url.url] : []) : [],
+    )
+    const needsImage = !body.stream || body.messages.at(-1)?.role !== 'tool'
+    if ((needsImage && images.length === 0) ||
+        images.some((url) => !url.startsWith(prefix) || sniff(Buffer.from(url.slice(prefix.length), 'base64')) !== 'png')) {
+      res.writeHead(415).end('{}')
+      return
     }
     if (body.stream) {
       fake.agentCalls++
       agentTurn(res, body)
       return
     }
-    fake.judgeCalls++
+    const call = ++fake.judgeCalls
     inFlight++
     fake.maxInFlight = Math.max(fake.maxInFlight, inFlight)
     try {
@@ -131,7 +147,7 @@ async function startFake(): Promise<Fake> {
         return
       }
       const url = body.messages[1]!.content[0]!.image_url!.url
-      const mass = await massOf(url)
+      const mass = massForCall?.(call) ?? fake.fixedMass ?? await massOf(url)
       const token = topLabel(mass)
       res.setHeader('content-type', 'application/json')
       res.end(
@@ -355,6 +371,51 @@ describe('e2e: レイヤー付き PSD', () => {
     expect(Number(text)).toBeCloseTo(P_NG, 6)
     expect(Number(text)).toBeLessThan(0.1)
   })
+
+  it('PSD の上限ちょうどでは最後まで判定し、超過時は REST と MCP で必要件数を返す', async () => {
+    const fake = await startFake((call) => call === 4 ? MASS_FORGOT : MASS_OK)
+    const psd = Buffer.from(psdWithMosaic())
+    const mime = 'image/vnd.adobe.photoshop'
+    const accepted = await startHarness(fake, { maxRenders: 4 })
+    const success = await postDetail(accepted.url, psd, mime)
+    expect(success.status).toBe(200)
+    const result = await success.json() as DetailBody
+    expect(result.p_ok).toBeCloseTo(P_NG)
+    expect(result.render).toBe('「背景」を外す')
+    expect(fake.judgeCalls).toBe(4)
+    const tokenized = fake.tokenizeCalls
+
+    const capped = await startHarness(fake, { maxRenders: 3, maxFrames: 1, recheck: true })
+    const response = await postDetail(capped.url, psd, mime)
+    expect(response.status).toBe(413)
+    const body = await response.json()
+    expect(body).toEqual({
+      error: 'too_large', reason: 'psd_render_limit', required_renders: 4, max_renders: 3,
+      message: expect.stringMatching(/4件.*3件/),
+    })
+    const client = new Client({ name: 'e2e', version: '0.0.0' })
+    await client.connect(new StreamableHTTPClientTransport(new URL(`${capped.url}/mcp`), { requestInit: { headers: AUTH } }))
+    try {
+      const error = await client.callTool({
+        name: 'check_mosaic',
+        arguments: { image_base64: psd.toString('base64') },
+      })
+      expect(error.isError).toBe(true)
+      expect(error.structuredContent).toEqual(body)
+      expect(error.content).toEqual([{ type: 'text', text: expect.stringMatching(/^error: too_large: /) }])
+    } finally {
+      await client.close()
+    }
+
+    const frames = await Promise.all(['#ffffff', '#ff0000'].map(pngOf))
+    const gif = await sharp(frames, { join: { animated: true } }).gif().toBuffer()
+    const other = await postDetail(capped.url, gif, 'image/gif')
+    expect(other.status).toBe(413)
+    expect(await other.json()).toEqual({ error: 'too_large', message: expect.any(String) })
+    expect(fake.judgeCalls).toBe(4)
+    expect(fake.tokenizeCalls).toBe(tokenized)
+    expect(fake.agentCalls).toBe(0)
+  })
 })
 
 describe('e2e: 再判定（RECHECK=1）', () => {
@@ -574,8 +635,8 @@ describe('e2e: 切断と MCP の上限', () => {
   })
 })
 
-type DetailBody = { p_ok: number; judgment: string; confidence: number; render: string; classes: Record<'none' | 'ok' | 'forgot' | 'insufficient' | 'nori', number> }
-const CLASS_KEYS = ['forgot', 'insufficient', 'nori', 'none', 'ok']
+type DetailBody = { p_ok: number; judgment: string; confidence: number; render: string; classes: Record<'ok' | 'forgot' | 'nori', number>; per_model: Record<string, Probs4> }
+const CLASS_KEYS = ['forgot', 'nori', 'ok']
 
 async function postDetail(url: string, bytes: Uint8Array, mime: string, query = 'detail=1') {
   return fetch(`${url}/v1/check?${query}`, {
@@ -585,8 +646,8 @@ async function postDetail(url: string, bytes: Uint8Array, mime: string, query = 
   })
 }
 
-describe('e2e: 詳細（detail）と 5 択', () => {
-  it('REST の detail=1 は p_ok・描画の説明・生の 5 択の確率を JSON で返す', async () => {
+describe('e2e: 詳細（detail）', () => {
+  it('REST の detail=1 は p_ok・描画の説明・統合後とモデル別の確率を JSON で返す', async () => {
     const fake = await startFake()
     const { url, lines } = await startHarness(fake)
     const res = await postDetail(url, await pngOf('#ff0000'), 'image/png')
@@ -594,18 +655,16 @@ describe('e2e: 詳細（detail）と 5 択', () => {
     expect(res.status).toBe(200)
     expect(res.headers.get('content-type')).toContain('application/json')
     const body = JSON.parse(text) as DetailBody
-    expect(Object.keys(body).sort()).toEqual(['classes', 'confidence', 'judgment', 'p_ok', 'render'])
-    // 総合判断は 5 択で最も確率が高い答え（かけ忘れ 0.9）で、確率はその生の値
+    expect(Object.keys(body).sort()).toEqual(['classes', 'confidence', 'judgment', 'p_ok', 'per_model', 'render'])
     expect(body.judgment).toBe('forgot')
-    expect(body.confidence).toBeCloseTo(0.9, 6)
+    expect(body.confidence).toBeCloseTo(0.95, 6)
     expect(Object.keys(body.classes).sort()).toEqual([...CLASS_KEYS].sort())
     expect(body.p_ok).toBeCloseTo(P_NG, 6)
     expect(body.render).toBe('ラスター')
-    expect(body.classes.forgot).toBeCloseTo(0.9, 6)
-    expect(body.classes.insufficient).toBeCloseTo(0.05, 6)
+    expect(body.classes.forgot).toBeCloseTo(0.95, 6)
     expect(body.classes.nori).toBeCloseTo(0.02, 6)
-    expect(body.classes.none).toBeCloseTo(0.01, 6)
-    expect(body.classes.ok).toBeCloseTo(0.02, 6)
+    expect(body.classes.ok).toBeCloseTo(0.03, 6)
+    expect(body.per_model.default?.none).toBeCloseTo(0.01, 6)
     expect(lines.join('\n')).not.toContain(KEY)
   })
 
@@ -617,7 +676,7 @@ describe('e2e: 詳細（detail）と 5 択', () => {
     expect(res.status).toBe(200)
     expect(body.render).toBe('モザイク名のレイヤーを非表示')
     expect(body.p_ok).toBeCloseTo(P_NG, 6)
-    expect(body.classes.forgot).toBeCloseTo(0.9, 6)
+    expect(body.classes.forgot).toBeCloseTo(0.95, 6)
   })
 
   it('detail=true も詳細を返し、既定（detail 無し・detail=0）は数値だけのまま', async () => {
@@ -641,22 +700,15 @@ describe('e2e: 詳細（detail）と 5 択', () => {
     }
   })
 
-  it('黒い枠（ノリ）は既定では問題として数え、nori の確率を返す。NORI_AS_OK では ok に移る', async () => {
+  it('黒い枠（ノリ）は nori として NG 側に入る', async () => {
     const fake = await startFake()
-    const black = await pngOf('#000000')
-    const strict = await startHarness(fake)
-    const sb = JSON.parse(await (await postDetail(strict.url, black, 'image/png')).text()) as DetailBody
-    expect(sb.p_ok).toBeCloseTo(P_NG, 6)
-    expect(sb.classes.nori).toBeCloseTo(0.9, 6)
-    expect(sb.classes.ok).toBeCloseTo(0.02, 6)
-
-    const lenient = await startHarness(fake, { noriAsOk: true })
-    const lb = JSON.parse(await (await postDetail(lenient.url, black, 'image/png')).text()) as DetailBody
-    // nori を ok に移した後の値で p_ok を出す。classes は移動前の生の値
-    expect(lb.p_ok).toBeCloseTo(pOk({ none: 0.01, ok: 0.92, ng: 0.07 }, new Calibrator()), 6)
-    expect(lb.p_ok).toBeGreaterThan(sb.p_ok)
-    expect(lb.classes.nori).toBeCloseTo(0.9, 6)
-    expect(lb.classes.ok).toBeCloseTo(0.02, 6)
+    const { url } = await startHarness(fake)
+    const res = await postDetail(url, await pngOf('#000000'), 'image/png')
+    const body = await res.json() as DetailBody
+    expect(body.judgment).toBe('nori')
+    expect(body.p_ok).toBeCloseTo(P_NG, 6)
+    expect(body.classes.nori).toBeCloseTo(0.95, 6)
+    expect(body.classes.ok).toBeCloseTo(0.03, 6)
   })
 
   it('MCP の detail: true は同じ詳細 JSON の文字列を 1 要素で返す', async () => {
@@ -676,7 +728,7 @@ describe('e2e: 詳細（detail）と 5 択', () => {
       const body = JSON.parse(content[0]?.text ?? '') as DetailBody
       expect(body.p_ok).toBeCloseTo(P_NG, 6)
       expect(body.render).toBe('ラスター')
-      expect(body.classes.forgot).toBeCloseTo(0.9, 6)
+      expect(body.classes.forgot).toBeCloseTo(0.95, 6)
     } finally {
       await client.close()
     }
@@ -727,12 +779,12 @@ describe('e2e: fields の 3 パターン（judgment のみ / confidence のみ /
 
     const conf = await get('fields=confidence')
     expect(Object.keys(conf)).toEqual(['p_ok', 'confidence'])
-    expect(conf.confidence as number).toBeCloseTo(0.9, 6)
+    expect(conf.confidence as number).toBeCloseTo(0.95, 6)
 
     const both = await get('fields=judgment,confidence')
     expect(Object.keys(both)).toEqual(['p_ok', 'judgment', 'confidence'])
     expect(both.judgment).toBe('forgot')
-    expect(both.confidence as number).toBeCloseTo(0.9, 6)
+    expect(both.confidence as number).toBeCloseTo(0.95, 6)
     // p_ok は 3 パターンとも同じ値
     expect(only.p_ok).toBe(conf.p_ok)
     expect(conf.p_ok).toBe(both.p_ok)
@@ -743,9 +795,83 @@ describe('e2e: fields の 3 パターン（judgment のみ / confidence のみ /
     const fake = await startFake()
     const { url } = await startHarness(fake)
     const before = fake.judgeCalls
-    const res = await postDetail(url, await pngOf('#ff0000'), 'image/png', 'fields=bogus')
+    const res = await postDetail(url, await pngOf('#ff0000'), 'image/png', 'fields=per_model')
     expect(res.status).toBe(400)
     expect(await res.text()).not.toContain('p_ok')
     expect(fake.judgeCalls).toBe(before)
+  })
+})
+
+describe('e2e: v1.1 のモデル統合とアニメーション', () => {
+  it('全モデルの確率を重み付きで平均してから式を適用する。片方の失敗は 502', async () => {
+    const first = await startFake()
+    const second = await startFake()
+    first.fixedMass = { none: 0.2, processed: 0.4, forgot: 0.3, nori: 0.1 }
+    second.fixedMass = { none: 0.1, processed: 0.1, forgot: 0.1, nori: 0.7 }
+    const { url } = await startHarness(first, { judges: [
+      { name: 'x', model: 'model-x', urls: [first.url], slots: 2, weight: 1 },
+      { name: 'y', model: 'model-y', urls: [second.url], slots: 2, weight: 2 },
+    ] })
+    const png = await pngOf('#ffffff')
+    const response = await postDetail(url, png, 'image/png')
+    expect(response.status).toBe(200)
+    const body = await response.json() as DetailBody
+    // OK は 1.0/3、forgot は 0.5/3、nori は 1.5/3。
+    expect(body.p_ok).toBeCloseTo(0.4)
+    expect(body.judgment).toBe('nori')
+    expect(body.confidence).toBeCloseTo(0.5)
+    expect(body.per_model.x?.forgot).toBeCloseTo(0.3)
+    expect(body.per_model.y?.nori).toBeCloseTo(0.7)
+    expect([first.judgeCalls, second.judgeCalls]).toEqual([1, 1])
+
+    second.mode = 'error'
+    const failed = await postDetail(url, png, 'image/png', 'detail=0')
+    expect(failed.status).toBe(502)
+    const error = await failed.json()
+    expect(error).toMatchObject({ error: 'vlm' })
+    expect(error).not.toHaveProperty('p_ok')
+  })
+
+  it.each(['gif', 'webp'] as const)('%s は10秒ちょうどの後半フレームまで判定する', async (format) => {
+    const fake = await startFake()
+    const { url } = await startHarness(fake, { maxRenders: 2 })
+    const colors = ['#ffffff', '#6fde8f', '#8888ff', '#ff0000']
+    const frames = await Promise.all(colors.map(pngOf))
+    const image = await sharp(frames, { join: { animated: true } })[format]({ delay: [2500, 2500, 2500, 2500] }).toBuffer()
+    const res = await postDetail(url, image, `image/${format}`)
+    expect(res.status).toBe(200)
+    const body = await res.json() as DetailBody
+    expect(body.render).toBe('フレーム 4/4')
+    expect(body.p_ok).toBeCloseTo(P_NG)
+    expect(fake.judgeCalls).toBe(4)
+  })
+
+  it('2モデルがそれぞれ2スロットで全フレームを判定する', async () => {
+    const first = await startFake()
+    const second = await startFake()
+    first.delayMs = second.delayMs = 60
+    const { url } = await startHarness(first, { judges: [
+      { name: 'x', model: 'model-x', urls: [first.url], slots: 2, weight: 1 },
+      { name: 'y', model: 'model-y', urls: [second.url], slots: 2, weight: 1 },
+    ] })
+    const frames = await Promise.all(['#ffffff', '#6fde8f', '#8888ff', '#ff0000'].map(pngOf))
+    const gif = await sharp(frames, { join: { animated: true } }).gif().toBuffer()
+    const res = await postDetail(url, gif, 'image/gif')
+    expect(res.status).toBe(200)
+    expect([first.judgeCalls, second.judgeCalls]).toEqual([4, 4])
+    expect([first.maxInFlight, second.maxInFlight]).toEqual([2, 2])
+  })
+
+  it('フレーム数または再生時間を超過したら、推論前に 413 を返す', async () => {
+    const fake = await startFake()
+    const frames = await Promise.all(['#ffffff', '#8888ff'].map(pngOf))
+    const gif = await sharp(frames, { join: { animated: true } }).gif({ delay: [5000, 5010] }).toBuffer()
+    for (const limits of [{ maxFrames: 1, maxAnimSeconds: 11 }, { maxFrames: 2, maxAnimSeconds: 10 }]) {
+      const { url } = await startHarness(fake, limits)
+      const res = await postDetail(url, gif, 'image/gif')
+      expect(res.status).toBe(413)
+      expect(await res.json()).toMatchObject({ error: 'too_large' })
+    }
+    expect(fake.judgeCalls).toBe(0)
   })
 })

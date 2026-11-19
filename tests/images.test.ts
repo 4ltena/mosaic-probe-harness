@@ -83,10 +83,12 @@ describe('decodeBase64', () => {
 })
 
 describe('normalize', () => {
-  it('透過 PNG が JPEG になる', async () => {
-    const png = await solid(16, 16, 'png', 0.5)
+  it('正規化した RGB PNG は細線の色を保ち、透過を白で合成する', async () => {
+    const input = Buffer.from([235, 10, 100, 255, 10, 120, 100, 255, 20, 30, 40, 0])
+    const png = await sharp(input, { raw: { width: 3, height: 1, channels: 4 } }).png().toBuffer()
     const out = await normalize(png, { maxEdge: 64, maxPixels: 1_000_000 })
-    expect(sniff(out)).toBe('jpeg')
+    expect(await sharp(out).metadata()).toMatchObject({ format: 'png', channels: 3, isPalette: false, depth: 'uchar' })
+    expect([...await sharp(out).raw().toBuffer()]).toEqual([235, 10, 100, 10, 120, 100, 255, 255, 255])
   })
 
   it('長辺は maxEdge 以下になる', async () => {
@@ -112,7 +114,7 @@ describe('normalize', () => {
       .toBuffer()
     const out = await normalize(new Uint8Array(jpeg), { maxEdge: 2048, maxPixels: 1_000_000 })
     const meta = await sharp(out).metadata()
-    expect([meta.width, meta.height]).toEqual([20, 40])
+    expect(meta).toMatchObject({ format: 'png', width: 20, height: 40 })
   })
 
   it('maxPixels 超過は bad_input（画素数のメッセージで拒否したことも確かめる）', async () => {

@@ -9,6 +9,7 @@ const key = process.env.MOSAIC_API_KEY
 const file = process.argv[2]
 if (!file) throw new Error('画像ファイルを引数に指定してください')
 
+const timeoutMs = 300_000
 const bytes = await readFile(file)
 const auth = key ? { Authorization: `Bearer ${key}` } : {}
 
@@ -17,16 +18,18 @@ const res = await fetch(`${base}/v1/check`, {
   method: 'POST',
   headers: { ...auth, 'Content-Type': 'application/octet-stream' },
   body: bytes,
+  signal: AbortSignal.timeout(timeoutMs),
 })
 const text = await res.text()
 if (res.ok) console.log('REST p_ok =', Number(text))
 else console.log('REST 失敗', res.status, text)
 
-// REST の詳細: ?detail=1 を付けると JSON（p_ok・最悪の描画・問題の種類の生の確率）を返す。
+// REST の詳細: ?detail=1 を付けると JSON（p_ok・最悪の描画・統合後とモデル別の確率）を返す。
 const detailRes = await fetch(`${base}/v1/check?detail=1`, {
   method: 'POST',
   headers: { ...auth, 'Content-Type': 'application/octet-stream' },
   body: bytes,
+  signal: AbortSignal.timeout(timeoutMs),
 })
 const detailText = await detailRes.text()
 if (detailRes.ok) console.log('REST 詳細 =', JSON.parse(detailText))
@@ -42,7 +45,7 @@ try {
   const r = await client.callTool({
     name: 'check_mosaic',
     arguments: { image_base64: bytes.toString('base64') },
-  })
+  }, undefined, { timeout: timeoutMs })
   const t = r.content[0]?.text ?? ''
   if (r.isError) console.log('MCP 失敗', t)
   else console.log('MCP p_ok =', Number(t))
@@ -51,7 +54,7 @@ try {
   const d = await client.callTool({
     name: 'check_mosaic',
     arguments: { image_base64: bytes.toString('base64'), detail: true },
-  })
+  }, undefined, { timeout: timeoutMs })
   const dt = d.content[0]?.text ?? ''
   if (d.isError) console.log('MCP 詳細 失敗', dt)
   else console.log('MCP 詳細 =', JSON.parse(dt))
@@ -61,7 +64,7 @@ try {
     const f = await client.callTool({
       name: 'check_mosaic',
       arguments: { image_base64: bytes.toString('base64'), fields },
-    })
+    }, undefined, { timeout: timeoutMs })
     const ft = f.content[0]?.text ?? ''
     if (f.isError) console.log('MCP fields 失敗', ft)
     else console.log('MCP fields', fields.join(','), '=', JSON.parse(ft))

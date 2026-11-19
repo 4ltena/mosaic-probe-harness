@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Calibrator, chooseThresholds, label, pOk, reliability } from '../src/probability.ts'
+import { Calibrator, aggregate, chooseThresholds, judge4, label, reliability } from '../src/probability.ts'
+import type { Probs4 } from '../src/types.ts'
 
 const logLoss = (ps: number[], ys: number[]): number => {
   let s = 0
@@ -12,45 +13,6 @@ const logLoss = (ps: number[], ys: number[]): number => {
   })
   return s / ps.length
 }
-
-describe('pOk', () => {
-  it('OK 寄りの分布で p_ok は 0.05 近く（恒等較正）', () => {
-    expect(pOk({ none: 0, ok: 0.05, ng: 0.95 }, new Calibrator())).toBeCloseTo(0.05, 9)
-  })
-
-  it('B 寄りの分布で p_ok は 0.99 近く', () => {
-    expect(pOk({ none: 0, ok: 0.99, ng: 0.01 }, new Calibrator())).toBeCloseTo(0.99, 9)
-  })
-
-  it('対象なし（A=1）は p_ok = 1.0', () => {
-    expect(pOk({ none: 1, ok: 0, ng: 0 }, new Calibrator())).toBe(1.0)
-  })
-
-  it('対象ありと無しが半々なら p_ok は 0.5 近く', () => {
-    expect(pOk({ none: 0.5, ok: 0, ng: 0.5 }, new Calibrator())).toBeCloseTo(0.5, 9)
-  })
-
-  it('ok+ng == 0 でも例外にならず 1.0', () => {
-    expect(pOk({ none: 0, ok: 0, ng: 0 }, new Calibrator())).toBe(1.0)
-  })
-
-  it('任意の入力で常に 0〜1 の有限値', () => {
-    const cal = new Calibrator()
-    const cases = [
-      { none: 0, ok: 1, ng: 0 },
-      { none: 0, ok: 0, ng: 1 },
-      { none: 0.3, ok: 0.7, ng: 0 },
-      { none: 0.2, ok: 0.4, ng: 0.4 },
-      { none: 0, ok: 0.5, ng: 0.5 },
-    ]
-    for (const c of cases) {
-      const v = pOk(c, cal)
-      expect(Number.isFinite(v)).toBe(true)
-      expect(v).toBeGreaterThanOrEqual(0)
-      expect(v).toBeLessThanOrEqual(1)
-    }
-  })
-})
 
 describe('Calibrator', () => {
   it('既定は恒等で、端点も有限', () => {
@@ -81,14 +43,16 @@ describe('Calibrator', () => {
     try {
       const missing = join(dir, 'none.json')
       const loaded = Calibrator.load(missing)
-      expect(loaded.toJSON()).toEqual({ a: 1, b: 0 })
+      expect(loaded.toJSON()).toEqual({ version: 'v1.1', a: 1, b: 0 })
 
       const path = join(dir, 'calibration.json')
+      writeFileSync(path, JSON.stringify({ a: 0.5, b: -0.25 }))
+      expect(Calibrator.load(path).apply(0.2)).toBe(0.2)
       const fitted = new Calibrator(0.5, -0.25)
       writeFileSync(path, JSON.stringify(fitted.toJSON()), 'utf8')
       const back = Calibrator.load(path)
-      expect(back.toJSON()).toEqual({ a: 0.5, b: -0.25 })
-      expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ a: 0.5, b: -0.25 })
+      expect(back.toJSON()).toEqual({ version: 'v1.1', a: 0.5, b: -0.25 })
+      expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ version: 'v1.1', a: 0.5, b: -0.25 })
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -137,5 +101,105 @@ describe('chooseThresholds', () => {
     const [tOk, tNg] = chooseThresholds([0.6, 0.9], [0.01, 0.05])
     expect(tOk).toBeCloseTo(0.3, 9)
     expect(tNg).toBeCloseTo(0.5, 9)
+  })
+})
+
+
+describe('aggregate', () => {
+  it('重みつき平均する（重み 1 と 3 なら 1:3）', () => {
+    const a: Probs4 = { none: 1, processed: 0, forgot: 0, nori: 0 }
+    const b: Probs4 = { none: 0, processed: 0, forgot: 1, nori: 0 }
+    const r = aggregate([
+      { probs: a, weight: 1 },
+      { probs: b, weight: 3 },
+    ])
+    expect(r.none).toBeCloseTo(0.25, 9)
+    expect(r.forgot).toBeCloseTo(0.75, 9)
+    expect(r.processed + r.nori).toBeCloseTo(0, 9)
+  })
+
+  it('結果の合計は 1', () => {
+    const r = aggregate([
+      { probs: { none: 0.2, processed: 0.3, forgot: 0.4, nori: 0.1 }, weight: 2 },
+      { probs: { none: 0.6, processed: 0.1, forgot: 0.1, nori: 0.2 }, weight: 1 },
+    ])
+    expect(r.none + r.processed + r.forgot + r.nori).toBeCloseTo(1, 9)
+  })
+
+  it('空・負の重み・合計 0 は例外', () => {
+    const p: Probs4 = { none: 1, processed: 0, forgot: 0, nori: 0 }
+    expect(() => aggregate([])).toThrow()
+    expect(() => aggregate([{ probs: p, weight: -1 }])).toThrow()
+    expect(() => aggregate([{ probs: p, weight: 0 }])).toThrow()
+  })
+})
+
+describe('judge4（仕様 §1 の式）', () => {
+  // okMass 0.7（none + processed）、forgot 0.25、nori 0.05
+  const P: Probs4 = { none: 0.1, processed: 0.6, forgot: 0.25, nori: 0.05 }
+
+  it('okMass と ngMass と classes', () => {
+    const r = judge4(P)
+    expect(r.okMass).toBeCloseTo(0.7, 9)
+    expect(r.ngMass).toBeCloseTo(0.25, 9)
+    expect(r.classes.ok).toBeCloseTo(0.7, 9)
+    expect(r.classes.forgot).toBeCloseTo(0.25, 9)
+    expect(r.classes.nori).toBeCloseTo(0.05, 9)
+  })
+
+  it('pOk（恒等較正）は okMass / (okMass + ngMass)', () => {
+    expect(judge4(P).pOk).toBeCloseTo(0.7 / 0.95, 9)
+  })
+
+  it('okMass ≥ ngMass なら judgment は ok、confidence は okMass', () => {
+    const r = judge4(P)
+    expect(r.judgment).toBe('ok')
+    expect(r.confidence).toBeCloseTo(0.7, 9)
+  })
+
+  it('NG 側が勝つとき judgment は多い方の NG 種（nori）、confidence は ngMass', () => {
+    const r = judge4({ none: 0, processed: 0.2, forgot: 0.1, nori: 0.7 })
+    expect(r.judgment).toBe('nori')
+    expect(r.confidence).toBeCloseTo(0.7, 9)
+  })
+
+  it('NG 側が勝ち forgot が多ければ judgment は forgot', () => {
+    const r = judge4({ none: 0, processed: 0.1, forgot: 0.8, nori: 0.1 })
+    expect(r.judgment).toBe('forgot')
+    expect(r.confidence).toBeCloseTo(0.8, 9)
+  })
+
+  it('ngMass は forgot と nori の大きい方（小さい方ではない）', () => {
+    const r = judge4({ none: 0, processed: 0.6, forgot: 0.1, nori: 0.3 })
+    expect(r.ngMass).toBeCloseTo(0.3, 9)
+    expect(r.pOk).toBeCloseTo(0.6 / 0.9, 9)
+  })
+
+  it('同率: okMass ≥ ngMass なら ok、NG 側同士なら forgot', () => {
+    expect(judge4({ none: 0, processed: 0.5, forgot: 0.25, nori: 0.25 }).judgment).toBe('ok')
+    expect(judge4({ none: 0, processed: 0.25, forgot: 0.375, nori: 0.375 }).judgment).toBe('forgot')
+  })
+
+  it('対象なし（none = 1）なら pOk は 1', () => {
+    expect(judge4({ none: 1, processed: 0, forgot: 0, nori: 0 }).pOk).toBe(1)
+  })
+
+  it('全て 0 は例外（数値を返さない）', () => {
+    expect(() => judge4({ none: 0, processed: 0, forgot: 0, nori: 0 })).toThrow()
+  })
+})
+
+describe('pOkCal（較正を通す版）', () => {
+  const P: Probs4 = { none: 0.1, processed: 0.6, forgot: 0.25, nori: 0.05 }
+
+  it('恒等較正なら judge4 の pOk と一致', () => {
+    expect(judge4(P, new Calibrator()).pOk).toBeCloseTo(judge4(P).pOk, 9)
+  })
+
+  it('較正は q = ngMass/(okMass+ngMass) に掛け、p_ok = 1 − cal(q)', () => {
+    const cal = new Calibrator(1, 1)
+    const q = 0.25 / 0.95
+    expect(judge4(P, cal).pOk).toBeCloseTo(1 - cal.apply(q), 9)
+    expect(judge4(P, cal).pOk).not.toBeCloseTo(judge4(P).pOk, 3)
   })
 })

@@ -4,7 +4,8 @@ import { Agent, type AgentMessage, type AgentTool, type StreamFn } from '@earend
 import type { ImageContent, Model, TextContent } from '@earendil-works/pi-ai'
 import sharp from 'sharp'
 import type { Config } from './config.ts'
-import type { ClassProbs } from './types.ts'
+import { MODEL_IMAGE_MIME } from './images.ts'
+import { CheckError } from './types.ts'
 
 const MIN_SIDE_PX = 32
 
@@ -33,18 +34,18 @@ function pixelRect(
 export function createRecheck(
   cfg: Config,
   deps: {
-    judge: (jpeg: Uint8Array) => Promise<ClassProbs>
-    pOk: (p: ClassProbs) => number
+    score: (png: Uint8Array, signal?: AbortSignal) => Promise<number>
     chat: { streamFn: unknown; model: unknown }
   },
-): (jpeg: Uint8Array, p: number) => Promise<number> {
+): (png: Uint8Array, p: number, signal?: AbortSignal) => Promise<number> {
   const streamFn = deps.chat.streamFn as StreamFn
   const model = deps.chat.model as Model<any>
 
-  return async (jpeg, p) => {
+  return async (png, p, signal) => {
     const recorded: number[] = []
+    let judgeError: CheckError | undefined
     let attempts = 0
-    const meta = await sharp(jpeg).metadata().catch(() => undefined)
+    const meta = await sharp(png).metadata().catch(() => undefined)
     const w = meta?.width ?? 0
     const h = meta?.height ?? 0
 
@@ -68,9 +69,14 @@ export function createRecheck(
         if (attempts > cfg.recheckMaxCrops) return textResult('上限を超えたため無視しました。')
         const rect = pixelRect(params, w, h)
         if (!rect) return textResult('座標が不正か領域が小さすぎるため無視しました。')
-        const region = await sharp(jpeg).extract(rect).jpeg({ quality: 92 }).toBuffer()
-        const v = deps.pOk(await deps.judge(region))
-        if (Number.isFinite(v)) recorded.push(v)
+        const region = await sharp(png).extract(rect).png({ palette: false }).toBuffer()
+        try {
+          const v = await deps.score(region, signal)
+          if (Number.isFinite(v)) recorded.push(v)
+        } catch (e) {
+          if (e instanceof CheckError && e.kind === 'vlm') judgeError = e
+          throw e
+        }
         return textResult('記録しました。')
       },
     }
@@ -89,19 +95,25 @@ export function createRecheck(
       streamFn,
     })
 
-    const img: ImageContent = { type: 'image', data: Buffer.from(jpeg).toString('base64'), mimeType: 'image/jpeg' }
+    const img: ImageContent = { type: 'image', data: Buffer.from(png).toString('base64'), mimeType: MODEL_IMAGE_MIME }
     const txt: TextContent = { type: 'text', text: 'この画像を確認してください。' }
     const message = { role: 'user', content: [img, txt], timestamp: Date.now() } as AgentMessage
 
     // 失敗・例外・タイムアウトでも、記録済みの最小値までは反映する（上げない）。
-    const timer = setTimeout(() => agent.abort(), cfg.vlmTimeoutMs)
+    const abort = () => agent.abort()
+    const timer = setTimeout(abort, cfg.vlmTimeoutMs)
+    signal?.addEventListener('abort', abort, { once: true })
     try {
+      signal?.throwIfAborted()
       await agent.prompt(message)
     } catch {
       // 例外は記録済みの値だけで決める
     } finally {
       clearTimeout(timer)
+      signal?.removeEventListener('abort', abort)
     }
+    signal?.throwIfAborted()
+    if (judgeError) throw judgeError
     return Math.min(p, ...recorded)
   }
 }

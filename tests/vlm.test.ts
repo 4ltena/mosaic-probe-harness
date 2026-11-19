@@ -3,8 +3,8 @@ import { createServer, type IncomingMessage, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { loadRules, buildJudge } from '../src/vlm.ts'
-import { defaultConfig, type Config } from '../src/config.ts'
+import { loadRules, buildJudges } from '../src/vlm.ts'
+import { defaultConfig, type Config, type JudgeSpec } from '../src/config.ts'
 import { CheckError } from '../src/types.ts'
 
 // 偽 llama-server。受けた要求を記録し、用意した応答を順に返す。
@@ -17,19 +17,26 @@ interface Reply {
 let server: Server
 let base: string
 let replies: Reply[] = []
+let tokens: Record<string, { id: number; piece: string }>
 let seen: { headers: IncomingMessage['headers']; body: any }[] = []
 
 const RULES_PATH = join(process.cwd(), 'rules.md')
 const RULES_TEXT = readFileSync(RULES_PATH, 'utf8')
-const JPEG = new Uint8Array([0xff, 0xd8, 0xff, 0xd9])
-const JPEG_B64 = Buffer.from(JPEG).toString('base64')
+const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+const PNG_B64 = Buffer.from(PNG).toString('base64')
 
 beforeAll(async () => {
   server = createServer((req, res) => {
     const chunks: Buffer[] = []
     req.on('data', (c: Buffer) => chunks.push(c))
     req.on('end', () => {
-      seen.push({ headers: req.headers, body: JSON.parse(Buffer.concat(chunks).toString('utf8')) })
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+      if (req.url === '/tokenize') {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ tokens: [tokens[body.content]] }))
+        return
+      }
+      seen.push({ headers: req.headers, body })
       const r = replies.shift() ?? { status: 500, body: {} }
       setTimeout(() => {
         if (res.destroyed) return
@@ -50,13 +57,14 @@ afterAll(async () => {
 beforeEach(() => {
   replies = []
   seen = []
+  tokens = Object.fromEntries(['none', 'processed', 'forgot', 'nori'].map((piece, id) => [piece, { id, piece }]))
 })
 
-type Masses = Partial<Record<'A' | 'B' | 'C' | 'D' | 'E', number>>
+type Masses = Partial<Record<'none' | 'processed' | 'forgot' | 'nori', number>>
 
 /**
- * 最初のトークン位置の top_logprobs を作る。A〜E の確率（質量）を指定する。
- * A=対象なし / B=処理済み / C=かけ忘れ / D=不十分 / E=ノリ。
+ * 最初のトークン位置の top_logprobs を作る。4 語の先頭トークンの質量を指定する。
+ * extra には語と紛らわしい変種（前後の空白など）の質量を入れられる。
  */
 function ok(masses: Masses, extra: Record<string, number> = {}): Reply {
   const entries = [
@@ -79,17 +87,31 @@ function ok(masses: Masses, extra: Record<string, number> = {}): Reply {
   }
 }
 
-function cfgFor(url: string, over: Partial<Config> = {}): Config {
+const spec = (urls: string[], over: Partial<JudgeSpec> = {}): JudgeSpec => ({
+  name: 'test',
+  model: 'test-model',
+  urls,
+  slots: 1,
+  weight: 1,
+  ...over,
+})
+
+function cfgFor(judges: JudgeSpec[], over: Partial<Config> = {}): Config {
   return defaultConfig({
-    vlmBaseUrls: [url],
-    vlmModel: 'test-model',
+    judges,
     rulesPath: RULES_PATH,
     vlmTimeoutMs: 5000,
     vlmApiKey: undefined,
     vlmExtraBody: {},
-    noriAsOk: false,
+    temperature: 1,
     ...over,
   })
+}
+
+/** 単一の台（base）を持つ判定器を 1 つ作る。 */
+function judgeAt(over: Partial<Config> = {}, js: Partial<JudgeSpec> = {}) {
+  const [judge] = buildJudges(cfgFor([spec([base], js)], over))
+  return judge!
 }
 
 async function expectVlmError(p: Promise<unknown>): Promise<void> {
@@ -103,117 +125,152 @@ async function expectVlmError(p: Promise<unknown>): Promise<void> {
   expect((err as CheckError).kind).toBe('vlm')
 }
 
-// 合計 1 の 5 択の質量（none=A, ok=B, forgot=C, insufficient=D, nori=E）
-const FIVE = { A: 0.1, B: 0.6, C: 0.2, D: 0.05, E: 0.05 }
+async function closedUrl(): Promise<string> {
+  const closed = createServer()
+  await new Promise<void>((resolve) => closed.listen(0, '127.0.0.1', () => resolve()))
+  const port = (closed.address() as AddressInfo).port
+  await new Promise<void>((resolve) => closed.close(() => resolve()))
+  return `http://127.0.0.1:${port}`
+}
+
+// 4 語の先頭トークンの質量（合計 1）
+const FOUR = { none: 0.1, processed: 0.6, forgot: 0.25, nori: 0.05 }
 
 describe('loadRules', () => {
   it('rulesPath の内容を返す', () => {
-    expect(loadRules(cfgFor(base))).toBe(RULES_TEXT)
+    expect(loadRules(cfgFor([spec([base])]))).toBe(RULES_TEXT)
   })
 
   it('ファイルが無ければ internal', () => {
     let caught: unknown
     try {
-      loadRules(cfgFor(base, { rulesPath: join(process.cwd(), 'no-such-rules.md') }))
+      loadRules(cfgFor([spec([base])], { rulesPath: join(process.cwd(), 'no-such-rules.md') }))
     } catch (e) {
       caught = e
     }
     expect(caught).toBeInstanceOf(CheckError)
     expect((caught as CheckError).kind).toBe('internal')
   })
+})
 
-  it('rules.md に 3 種類（かけ忘れ・不十分・ノリ）の定義がある', () => {
-    expect(RULES_TEXT).toContain('かけ忘れ')
-    expect(RULES_TEXT).toContain('不十分')
-    expect(RULES_TEXT).toContain('ノリ')
+describe('buildJudges', () => {
+  it('JUDGES の要素ごとに 1 件。name と weight を保つ', () => {
+    const judges = buildJudges(
+      cfgFor([spec([base], { name: 'a', weight: 1 }), spec([base], { name: 'b', weight: 2 })]),
+    )
+    expect(judges.map((j) => j.name)).toEqual(['a', 'b'])
+    expect(judges.map((j) => j.weight)).toEqual([1, 2])
   })
 })
 
-describe('buildJudge', () => {
-  it('5 ラベルの確率が none/ok と kinds（生の 3 種類）に入る', async () => {
-    replies.push(ok(FIVE))
-    const p = await buildJudge(cfgFor(base)).judge(JPEG)
-    expect(p.none).toBeCloseTo(0.1, 6)
-    expect(p.ok).toBeCloseTo(0.6, 6)
-    expect(p.kinds).toBeDefined()
-    expect(p.kinds!.forgot).toBeCloseTo(0.2, 6)
-    expect(p.kinds!.insufficient).toBeCloseTo(0.05, 6)
-    expect(p.kinds!.nori).toBeCloseTo(0.05, 6)
+describe('judge', () => {
+  it('4 語の質量を Probs4 にする（合計 1 のときはそのまま）', async () => {
+    replies.push(ok(FOUR))
+    const p = await judgeAt().judge(PNG)
+    expect(p.none).toBeCloseTo(0.1, 9)
+    expect(p.processed).toBeCloseTo(0.6, 9)
+    expect(p.forgot).toBeCloseTo(0.25, 9)
+    expect(p.nori).toBeCloseTo(0.05, 9)
+    expect(p.none + p.processed + p.forgot + p.nori).toBeCloseTo(1, 9)
     expect(seen.length).toBe(1)
   })
 
-  it('ng は 3 種類の合計に等しく、none + ok + ng は 1', async () => {
-    replies.push(ok(FIVE))
-    const p = await buildJudge(cfgFor(base)).judge(JPEG)
-    const k = p.kinds!
-    expect(p.ng).toBeCloseTo(k.forgot + k.insufficient + k.nori, 6)
-    expect(p.ng).toBeCloseTo(0.3, 6)
-    expect(p.none + p.ok + p.ng).toBeCloseTo(1, 6)
+  it('空白付きの語も合算し、合計 0.9 の質量を正規化する', async () => {
+    replies.push(ok({ none: 0.1, processed: 0.5, forgot: 0.2, nori: 0.05 }, { ' nori': 0.05 }))
+    const p = await judgeAt().judge(PNG)
+    expect(p.none).toBeCloseTo(0.1 / 0.9, 9)
+    expect(p.nori).toBeCloseTo(0.1 / 0.9, 9)
+    expect(p.none + p.processed + p.forgot + p.nori).toBeCloseTo(1, 9)
   })
 
-  it('noriAsOk のとき nori は ok に移り、ng から抜ける。kinds は生のまま', async () => {
-    replies.push(ok(FIVE))
-    const p = await buildJudge(cfgFor(base, { noriAsOk: true })).judge(JPEG)
-    expect(p.ok).toBeCloseTo(0.65, 6)
-    expect(p.ng).toBeCloseTo(0.25, 6)
-    expect(p.kinds!.nori).toBeCloseTo(0.05, 6)
-    expect(p.kinds!.forgot).toBeCloseTo(0.2, 6)
-    expect(p.kinds!.insufficient).toBeCloseTo(0.05, 6)
-    expect(p.none + p.ok + p.ng).toBeCloseTo(1, 6)
+  it('複数トークンの語は、トークナイザーが返した先頭部分で照合する', async () => {
+    tokens.processed = { id: 10, piece: 'process' }
+    replies.push(ok({ none: 0.1, forgot: 0.2, nori: 0.1 }, { ' process': 0.6 }))
+    expect((await judgeAt().judge(PNG)).processed).toBeCloseTo(0.6)
   })
 
-  it('同じラベルの変種（前後の空白）は合算する', async () => {
-    replies.push(ok(FIVE, { ' E': 0.05 }))
-    const p = await buildJudge(cfgFor(base)).judge(JPEG)
-    // E と " E" の質量 0.05 + 0.05 を足し、総和 1.05 で正規化する
-    expect(p.none).toBeCloseTo(0.1 / 1.05, 6)
-    expect(p.ok).toBeCloseTo(0.6 / 1.05, 6)
-    expect(p.kinds!.forgot).toBeCloseTo(0.2 / 1.05, 6)
-    expect(p.kinds!.insufficient).toBeCloseTo(0.05 / 1.05, 6)
-    expect(p.kinds!.nori).toBeCloseTo(0.1 / 1.05, 6)
+  it('先頭トークンが衝突したら画像をモデルへ送らない', async () => {
+    tokens.none = { id: 10, piece: 'no' }
+    tokens.nori = { id: 10, piece: 'no' }
+    await expectVlmError(judgeAt().judge(PNG))
+    expect(seen).toHaveLength(0)
   })
 
-  it('質量 < 0.5 なら再試行して 2 回目の応答を使う（計 2 要求）', async () => {
-    replies.push(ok({ A: 0.08, B: 0.08, C: 0.08, D: 0.08, E: 0.08 }), ok({ A: 0.1, B: 0.5, C: 0.2, D: 0.1, E: 0.1 }))
-    const p = await buildJudge(cfgFor(base)).judge(JPEG)
-    expect(seen.length).toBe(2)
-    expect(p.ok).toBeCloseTo(0.5, 6)
-    expect(p.kinds!.insufficient).toBeCloseTo(0.1, 6)
+  it('温度 0.5 は各質量を 2 乗してから正規化する', async () => {
+    replies.push(ok(FOUR))
+    const p = await judgeAt({ temperature: 0.5 }).judge(PNG)
+    const sq = [0.1, 0.6, 0.25, 0.05].map((m) => m * m)
+    const sum = sq.reduce((s, v) => s + v, 0)
+    expect(p.none).toBeCloseTo(sq[0]! / sum, 9)
+    expect(p.processed).toBeCloseTo(sq[1]! / sum, 9)
+    expect(p.forgot).toBeCloseTo(sq[2]! / sum, 9)
+    expect(p.nori).toBeCloseTo(sq[3]! / sum, 9)
   })
 
-  it('再試行しても質量が足りなければ vlm エラー（計 2 要求）', async () => {
-    const low = { A: 0.08, B: 0.08, C: 0.08, D: 0.08, E: 0.08 }
-    replies.push(ok(low), ok(low))
-    await expectVlmError(buildJudge(cfgFor(base)).judge(JPEG))
-    expect(seen.length).toBe(2)
+  it('1 台目がタイムアウトしたら 2 台目で成功し、以後は 1 台目を選ばない', async () => {
+    // 1 台目は応答しない（vlmTimeoutMs 100 ms で切れる）。2 台目（base）は正常
+    let hungHits = 0
+    const hung = createServer((req) => {
+      hungHits++
+      req.resume()
+    })
+    await new Promise<void>((resolve) => hung.listen(0, '127.0.0.1', () => resolve()))
+    try {
+      const hungUrl = `http://127.0.0.1:${(hung.address() as AddressInfo).port}`
+      replies.push(ok(FOUR), ok(FOUR))
+      const judge = buildJudges(cfgFor([spec([hungUrl, base])], { vlmTimeoutMs: 200 }))[0]!
+      const p = await judge.judge(PNG)
+      expect(p.processed).toBeCloseTo(0.6, 9)
+      expect(seen.length).toBe(1)
+      expect(hungHits).toBe(4)
+      // 2 回目は 1 台目が外れているので、2 台目だけに行く
+      await judge.judge(PNG)
+      expect(seen.length).toBe(2)
+      expect(hungHits).toBe(4)
+    } finally {
+      hung.closeAllConnections()
+      await new Promise<void>((resolve) => hung.close(() => resolve()))
+    }
+  })
+
+  it('先頭トークンの質量が 0.9 未満なら単独の台で再試行せず失敗する', async () => {
+    replies.push(ok({ none: 0.1, processed: 0.5, forgot: 0.2, nori: 0.09 }))
+    await expectVlmError(judgeAt().judge(PNG))
+    expect(seen).toHaveLength(1)
   })
 
   it('logprobs の無い応答は vlm エラー', async () => {
-    replies.push({ body: { choices: [{ message: { role: 'assistant', content: 'B' } }] } })
-    await expectVlmError(buildJudge(cfgFor(base)).judge(JPEG))
+    replies.push({ body: { choices: [{ message: { role: 'assistant', content: 'processed' } }] } })
+    await expectVlmError(judgeAt().judge(PNG))
   })
 
   it('HTTP 500 は vlm エラー', async () => {
     replies.push({ status: 500, body: { error: 'boom' } })
-    await expectVlmError(buildJudge(cfgFor(base)).judge(JPEG))
+    await expectVlmError(judgeAt().judge(PNG))
   })
 
-  it('接続拒否は vlm エラー', async () => {
-    const closed = createServer()
-    await new Promise<void>((resolve) => closed.listen(0, '127.0.0.1', () => resolve()))
-    const port = (closed.address() as AddressInfo).port
-    await new Promise<void>((resolve) => closed.close(() => resolve()))
-    await expectVlmError(buildJudge(cfgFor(`http://127.0.0.1:${port}`)).judge(JPEG))
+  it('接続拒否（台が 1 つ）は vlm エラー', async () => {
+    const judge = buildJudges(cfgFor([spec([await closedUrl()])]))[0]!
+    await expectVlmError(judge.judge(PNG))
   })
 
   it('応答が遅くタイムアウトしたら vlm エラー', async () => {
-    replies.push({ delayMs: 1000, ...ok(FIVE) })
-    await expectVlmError(buildJudge(cfgFor(base, { vlmTimeoutMs: 100 })).judge(JPEG))
+    replies.push({ delayMs: 1000, ...ok(FOUR) })
+    await expectVlmError(judgeAt({ vlmTimeoutMs: 100 }).judge(PNG))
   })
 
-  it('要求の中身: max_tokens 1、model、logprobs、思考オフ、5 つの意味、データの注意、画像は data URI、tools なし', async () => {
-    replies.push(ok(FIVE))
-    await buildJudge(cfgFor(base, { vlmModel: 'test-model' })).judge(JPEG)
+  it('台が 2 つで 1 台目が接続拒否なら、2 台目で応答を得る（計 1 要求が 2 台目へ）', async () => {
+    const dead = await closedUrl()
+    replies.push(ok(FOUR))
+    const judge = buildJudges(cfgFor([spec([dead, base])]))[0]!
+    const p = await judge.judge(PNG)
+    expect(p.processed).toBeCloseTo(0.6, 9)
+    expect(seen.length).toBe(1)
+  })
+
+  it('要求の中身: max_tokens 1、model、logprobs、思考オフ、4 語の質問、データの注意、画像は data URI、tools なし', async () => {
+    replies.push(ok(FOUR))
+    await judgeAt({}, { model: 'test-model' }).judge(PNG)
     const body = seen[0]!.body
     expect(body.max_tokens).toBe(1)
     expect(body.model).toBe('test-model')
@@ -224,9 +281,12 @@ describe('buildJudge', () => {
 
     const system = body.messages.find((m: any) => m.role === 'system')
     const sysText: string = typeof system.content === 'string' ? system.content : JSON.stringify(system.content)
-    // 5 つの意味（対象なし・処理済み・かけ忘れ・不十分・ノリ）
-    for (const word of ['対象なし', '処理済み', 'かけ忘れ', '不十分', 'ノリ']) {
+    // 4 語（none, processed, forgot, nori）と、それぞれの意味
+    for (const word of ['none', 'processed', 'forgot', 'nori']) {
       expect(sysText).toContain(word)
+    }
+    for (const meaning of ['対象なし', '処理済み', 'かけ忘れ', 'ノリ']) {
+      expect(sysText).toContain(meaning)
     }
     expect(sysText).toContain('黒い')
     expect(sysText).toContain(RULES_TEXT)
@@ -234,20 +294,21 @@ describe('buildJudge', () => {
 
     const user = body.messages.find((m: any) => m.role === 'user')
     const img = user.content.find((c: any) => c.type === 'image_url')
-    expect(img.image_url.url).toBe(`data:image/jpeg;base64,${JPEG_B64}`)
+    expect(img.image_url.url).toBe(`data:image/png;base64,${PNG_B64}`)
   })
 
   it('VLM_EXTRA_BODY（vlmExtraBody）はトップレベルに混ざる', async () => {
-    replies.push(ok(FIVE))
-    await buildJudge(cfgFor(base, { vlmExtraBody: { top_k: 20 } })).judge(JPEG)
-    expect(seen[0]!.body.top_k).toBe(20)
+    replies.push(ok(FOUR))
+    await judgeAt({ vlmExtraBody: { top_k: 20, chat_template_kwargs: { enable_thinking: true, extra: false } } }).judge(PNG)
+    expect(seen[0]!.body).toMatchObject({ top_k: 20, chat_template_kwargs: { enable_thinking: false, extra: false } })
+    expect(() => judgeAt({ vlmExtraBody: { tools: [] } })).toThrow(/VLM_EXTRA_BODY/)
   })
 
   it('Authorization は vlmApiKey が設定されているときだけ付く', async () => {
-    replies.push(ok(FIVE), ok(FIVE))
-    await buildJudge(cfgFor(base)).judge(JPEG)
+    replies.push(ok(FOUR), ok(FOUR))
+    await judgeAt().judge(PNG)
     expect(seen[0]!.headers.authorization).toBeUndefined()
-    await buildJudge(cfgFor(base, { vlmApiKey: 'test-key-123' })).judge(JPEG)
+    await judgeAt({ vlmApiKey: 'test-key-123' }).judge(PNG)
     expect(seen[1]!.headers.authorization).toBe('Bearer test-key-123')
   })
 })

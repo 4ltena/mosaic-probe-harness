@@ -14,18 +14,24 @@
 
 ## 確率の作り方
 
-1. モデルに「A=対象なし / B=処理済み / C=かけ忘れ / D=不十分 / E=ノリ」の **1 文字だけ**を答えさせる（`max_tokens: 1`、思考オフ）。C・D・E は問題の 3 種類で、E（ノリ）はモザイクではなく黒い帯・枠で隠した状態を指す。
-2. 1 トークン目の `logprobs`（上位 20）から A〜E の確率を取り、合計を 1 に正規化する。ラベルの質量が 0.5 未満なら 1 回だけ再試行し、だめなら失敗にする（値を作らない）。
-3. 生の確率を `none`（A）、`ok`（B）、`ng`（C+D+E）、`kinds`（C・D・E の内訳）に分ける。`q = ng/(ng+ok)` に Platt 較正（`calibration.json`）を当て、`p_ok = 1 − (1 − none) × cal(q)` を返す。較正が無ければ恒等。
-   - `NORI_AS_OK=1` のときは E を `ok` に移し、`ng` から外す（`p_ok` の式は同じ。`kinds` は移す前の生の値）。
-4. モデルの自己申告の確率は使わない。質が低く、較正できないため。
-5. `detail` 応答の `judgment`（総合判断）は、`classes` の 5 択で最も確率が高い答え（同率は重い順）、`confidence` はその確率（`classes[judgment]`、較正前）。どちらも、`p_ok` が最小だった描画のもの。
-6. `detail` 応答の `classes` は、`p_ok` が最小だった描画の 5 択の生の確率（較正前）。`p_ok` とは換算しない。種類の内訳は参考情報で、判定の主役は `p_ok` のまま。
+1. 描画ごとに、減色なしの8bit RGB PNG とモザイクの判定基準を各モデルへ送る。透過部分は白で合成し、通常判定と切り出し再判定のどちらも PNG を使う。回答語は `none`（対象なし）、`processed`（処理済み）、`forgot`（未処理・処理不足）、`nori`（黒い帯・枠）とする。
+2. 各接続先の初回利用時に `/tokenize` で4語の先頭トークンを確かめる。`max_tokens: 1`、思考オフで、1トークン目の上位20件の `logprobs` を得る。4語の質量の合計が0.9以上の場合に、モデルごとに合計1へ正規化する。
+3. モデルの4語の確率を重み付き平均し、次の式を描画ごとに適用する。
+
+   ```text
+   okMass = P(none) + P(processed)
+   ngMass = max(P(forgot), P(nori))
+   q = ngMass / (okMass + ngMass)
+   p_ok = 1 - cal(q)
+   ```
+
+4. `cal` は v1.1 用の Platt 較正。ファイルが無ければ恒等を使う。`okMass >= ngMass` なら `judgment` は `ok`。それ以外は `forgot`、`nori` のうち大きい方で、同率は `forgot`。`confidence` は選んだ項目の確率。
+5. `p_ok` が最小の描画を採用する。`detail` の `classes` は統合後の `ok`、`forgot`、`nori`。`per_model` は同じ描画のモデル別の4語の確率。
 
 ## Pi の使い方
 
 - 土台は `@earendil-works/pi-ai` と `pi-agent-core`（MIT）。**Pi 本体は改造せず、依存として使う。**
-- pi-ai の `llama-cpp-classify` は画像入力に対応しないので、Pi の classifier 抽象（`createProvider` の `classifiers`、`models.classify`、`labelProbabilities`）に載せた**画像対応の自作 classifier**（`/v1/chat/completions` ＋ `logprobs`）を使う。
+- 通常の分類は `llama-server` の `/v1/chat/completions` へ直接問い合わせる。
 - `pi-agent-core` の `Agent` は再判定（`RECHECK=1`、既定オフ）だけに使う。境界付近の画像を領域ごとに切り出して判定し、**`p_ok` を下げることしかしない**。
 - **モデルに渡すツールは自作の `crop` だけ。** Pi の標準ツール（read / bash / edit / write など）は導入もしない。`tests/tool-scope.test.ts` で固定している。
 
@@ -35,9 +41,11 @@
 
 ## 複数台
 
-各台で独立した `llama-server` を動かし、ハーネスが振り分ける（複製）。1 台でも同じ設定・同じ挙動で動く。失敗した台は 15 秒外し、別の台で 1 回だけ再試行する（1 台のときは外さない）。
+`JUDGES` の各要素にモデルと接続先を設定する。同じモデルの複製は同じ要素の `urls` に入れる。タスクは描画とモデルの組み合わせで、同時実行数はモデルごとの共有プールが制限する。クライアントの切断後は待機中のタスクを取り消す。
 
-**RPC による 1 モデルの分割は採らない。** llama.cpp の RPC はパイプライン方式で 1 リクエストは速くならず、メモリを足せるだけ。画像入力との併用も未検証。メモリが足りる（1 台 512 GB）ので不要。
+複製のうち失敗した台は15秒外し、同じモデルの別の台で1回だけ再試行する。すべてのモデルの結果が揃った描画に対して式を適用する。
+
+GIF・WebP は既定で10秒・100フレームまで、TIFF は100ページまで。PSD は候補数が `MAX_RENDERS`（既定32）以内なら全候補を判定する。上限超過は `too_large` とし、PSD では `psd_render_limit` と必要件数・設定上限を返す。描画は必要になった時点で生成する。
 
 ## 失敗の扱い
 

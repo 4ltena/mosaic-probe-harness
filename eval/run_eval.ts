@@ -5,12 +5,12 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { loadConfig } from '../src/config.ts'
+import { checkResult, type CheckDeps } from '../src/check.ts'
 import { renderVariants } from '../src/layers.ts'
 import { normalize } from '../src/images.ts'
-import { Calibrator, chooseThresholds, pOk, reliability } from '../src/probability.ts'
-import type { ClassProbs } from '../src/types.ts'
-import { buildJudge } from '../src/vlm.ts'
-import { classesOf, isProblem, kindConfusion, parseLabels, summarize } from './lib.ts'
+import { Calibrator, chooseThresholds, reliability } from '../src/probability.ts'
+import { buildJudges } from '../src/vlm.ts'
+import { EVAL_KINDS, isProblem, kindConfusion, parseLabels, summarize } from './lib.ts'
 
 const evalDir = fileURLToPath(new URL('.', import.meta.url))
 
@@ -39,45 +39,24 @@ async function main(): Promise<void> {
 
   const cfg = loadConfig()
   const cal = Calibrator.load(cfg.calibrationPath)
-  const { judge } = buildJudge(cfg)
+  const deps: CheckDeps = { renderVariants, normalize, cal, judges: buildJudges(cfg) }
   const labels = parseLabels(readFileSync(labelsPath, 'utf8'))
 
-  // 画像ごとに全描画を判定し、pOk が最小の描画を採用する
-  const results: { filename: string; kind: string; probs: ClassProbs; ms: number }[] = []
+  const results = []
   for (const { filename, kind } of labels) {
     const t0 = performance.now()
     const data = new Uint8Array(readFileSync(join(imagesDir, filename)))
-    const variants = await renderVariants(data, {
-      maxRenders: cfg.maxRenders,
-      layerPattern: cfg.layerPattern,
-      maxPixels: cfg.maxPixels,
-      log: (line: string) => console.log(line),
-    })
-    let worst: ClassProbs | undefined
-    let worstP = Infinity
-    for (const v of variants) {
-      const jpeg = await normalize(v.image, { maxEdge: cfg.maxEdge, maxPixels: cfg.maxPixels })
-      const probs = await judge(jpeg)
-      const p = pOk(probs, cal)
-      if (p < worstP) {
-        worstP = p
-        worst = probs
-      }
-    }
-    if (!worst) throw new Error(`${filename}: 描画が 0 件でした`)
-    results.push({ filename, kind, probs: worst, ms: performance.now() - t0 })
+    const { detail, q } = await checkResult(data, cfg, deps)
+    results.push({ filename, kind, q, detail, ms: performance.now() - t0 })
   }
 
-  // ファイル名・確率・最悪の描画の classes（生の種類確率）を保存する
-  const scored = results.map((r) => ({
-    filename: r.filename,
-    probs: r.probs,
-    pOk: pOk(r.probs, cal),
-    classes: classesOf(r.probs, cfg.noriAsOk),
+  const scored = results.map(({ filename, kind, q, detail }) => ({
+    filename, kind, q, p_ok: detail.pOk, judgment: detail.judgment, render: detail.render,
+    classes: detail.classes, per_model: detail.perModel,
   }))
   writeFileSync(join(evalDir, 'results.jsonl'), scored.map((r) => JSON.stringify(r)).join('\n') + '\n')
 
-  const rows = results.map((r, i) => ({ kind: r.kind, pOk: scored[i]?.pOk ?? 0, classes: scored[i]?.classes }))
+  const rows = results.map(({ kind, detail }) => ({ kind, pOk: detail.pOk, judgment: detail.judgment }))
   const isOkLike = (k: string) => k === 'ok' || k === 'none'
   const ngPNg = rows.filter((r) => isProblem(r.kind)).map((r) => 1 - r.pOk)
   const okPNg = rows.filter((r) => isOkLike(r.kind)).map((r) => 1 - r.pOk)
@@ -86,14 +65,14 @@ async function main(): Promise<void> {
 
   console.log(`\n=== 混同行列（閾値 tOk=${tOk.toFixed(3)} tNg=${tNg.toFixed(3)}） ===`)
   console.log(`問題ありが pass になった件数: ${s.ngPassed}（最優先・0 が目標）`)
-  for (const kind of ['ng', 'ok', 'none', 'attack', 'forgot', 'insufficient', 'nori']) {
+  for (const kind of EVAL_KINDS) {
     const c = s.counts[kind]
     if (c) console.log(`${kind.padEnd(12)} pass=${c.pass} hold=${c.hold} stop=${c.stop}`)
   }
   console.log(`保留率: ${(s.holdRate * 100).toFixed(1)}%`)
 
-  // 種類別の混同行列（行: 期待した kind / 列: 最悪の描画の classes の最大）
-  const cols = ['none', 'ok', 'forgot', 'insufficient', 'nori']
+  // 種類別の混同行列（行: 期待した kind / 列: 最悪の描画の総合判断）
+  const cols = ['ok', 'forgot', 'nori']
   const conf = kindConfusion(rows)
   console.log('\n=== 種類別の混同行列（行: 期待 / 列: 予測） ===')
   console.log(['expected'.padEnd(14), ...cols.map((c) => c.padStart(12))].join(''))
@@ -115,7 +94,7 @@ async function main(): Promise<void> {
 
   console.log('\n=== 攻撃画像 ===')
   for (const r of results.filter((x) => x.kind === 'attack')) {
-    const p = scored.find((x) => x.filename === r.filename)?.pOk ?? NaN
+    const p = r.detail.pOk
     console.log(`${r.filename}  p_ok=${p.toFixed(4)}`)
   }
 
@@ -128,9 +107,9 @@ async function main(): Promise<void> {
   )
 
   if (write) {
-    // 較正は生の q = ng/(ng+ok) から学習する。y=1 は問題あり（種類は問わない）
-    const fitRows = results.filter((r) => (isProblem(r.kind) || r.kind === 'ok') && r.probs.ng + r.probs.ok > 0)
-    const qs = fitRows.map((r) => r.probs.ng / (r.probs.ng + r.probs.ok))
+    // 統合後・較正前の q から学習する。y=1 は問題あり。
+    const fitRows = results.filter((r) => isProblem(r.kind) || isOkLike(r.kind))
+    const qs = fitRows.map((r) => r.q)
     const ys = fitRows.map((r) => (isProblem(r.kind) ? 1 : 0))
     const fitted = Calibrator.fit(qs, ys).toJSON()
     writeFileSync(cfg.calibrationPath, JSON.stringify(fitted, null, 2) + '\n')

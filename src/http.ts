@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { Config } from './config.ts'
 import { authOk, corsHeaders, ipAllowed } from './net.ts'
-import { CheckError, DETAIL_FIELDS, type Detail, type DetailField, HTTP_STATUS_OF_KIND, type Judgment } from './types.ts'
+import { CheckError, DETAIL_FIELDS, type Detail, type DetailField, HTTP_STATUS_OF_KIND, type Judgment, PsdRenderLimitError } from './types.ts'
 
 export interface Handlers {
   check(bytes: Uint8Array, signal: AbortSignal): Promise<number>
@@ -18,10 +18,11 @@ export interface DetailJson {
   judgment?: Judgment
   confidence?: number
   render?: string
-  classes?: { none: number; ok: number; forgot: number; insufficient: number; nori: number }
+  classes?: Detail['classes']
+  per_model?: Detail['perModel']
 }
 
-const JUDGMENTS: readonly string[] = ['none', 'ok', 'forgot', 'insufficient', 'nori']
+const JUDGMENTS: readonly string[] = ['ok', 'forgot', 'nori']
 
 /**
  * fields の文字列（カンマ区切り）を解釈する。空・未知の項目・空要素があれば undefined（呼び出し側が 400 にする）。
@@ -37,19 +38,26 @@ export function parseFields(raw: string): DetailField[] | undefined {
  * 詳細を本文の形にする。p_ok は常に含み、fields で選んだ項目だけを足す（未指定なら全部）。
  * 値が非有限・範囲外なら、選ばなかった項目も含めて undefined（数値も JSON も返さない）。
  */
-export function detailJson(d: Detail, fields: readonly DetailField[] = DETAIL_FIELDS): DetailJson | undefined {
+export function detailJson(d: Detail, fields?: readonly DetailField[]): DetailJson | undefined {
   const ok = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1
   const c = d.classes
   if (!ok(d.pOk) || typeof d.render !== 'string' || !c) return undefined
-  if (!ok(c.none) || !ok(c.ok) || !ok(c.forgot) || !ok(c.insufficient) || !ok(c.nori)) return undefined
+  if (!ok(c.ok) || !ok(c.forgot) || !ok(c.nori)) return undefined
   if (!JUDGMENTS.includes(d.judgment) || !ok(d.confidence)) return undefined
   const out: DetailJson = { p_ok: d.pOk }
-  // 出力の順は固定（p_ok、judgment、confidence、render、classes）
-  if (fields.includes('judgment')) out.judgment = d.judgment
-  if (fields.includes('confidence')) out.confidence = d.confidence
-  if (fields.includes('render')) out.render = d.render
-  if (fields.includes('classes')) {
-    out.classes = { none: c.none, ok: c.ok, forgot: c.forgot, insufficient: c.insufficient, nori: c.nori }
+  const selected = fields ?? DETAIL_FIELDS
+  if (selected.includes('judgment')) out.judgment = d.judgment
+  if (selected.includes('confidence')) out.confidence = d.confidence
+  if (selected.includes('render')) out.render = d.render
+  if (selected.includes('classes')) out.classes = { ok: c.ok, forgot: c.forgot, nori: c.nori }
+  if (!fields) {
+    if (!d.perModel) return undefined
+    const entries = Object.entries(d.perModel)
+    for (const [, p] of entries) {
+      if (!p || !ok(p.none) || !ok(p.processed) || !ok(p.forgot) || !ok(p.nori)) return undefined
+    }
+    out.per_model = Object.fromEntries(entries.map(([name, { none, processed, forgot, nori }]) =>
+      [name, { none, processed, forgot, nori }]))
   }
   return out
 }
@@ -192,7 +200,8 @@ export function createHttpServer(
     } catch (e) {
       if (e instanceof CheckError) {
         const extra: Record<string, string> = e.kind === 'busy' ? { 'Retry-After': '5' } : {}
-        return sendJson(res, HTTP_STATUS_OF_KIND[e.kind], { error: e.kind, message: e.message }, extra)
+        const body = e instanceof PsdRenderLimitError ? e.body : { error: e.kind, message: e.message }
+        return sendJson(res, HTTP_STATUS_OF_KIND[e.kind], body, extra)
       }
       return sendJson(res, 500, { error: 'internal' })
     }

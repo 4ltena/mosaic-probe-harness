@@ -3,6 +3,7 @@ import type { Metadata } from 'sharp'
 import { CheckError } from './types.ts'
 
 export type Format = 'png' | 'jpeg' | 'webp' | 'gif' | 'tiff' | 'psd' | 'unsupported'
+export const MODEL_IMAGE_MIME = 'image/png'
 
 const ascii = (data: Uint8Array, start: number, text: string): boolean => {
   if (data.length < start + text.length) return false
@@ -43,7 +44,7 @@ export function decodeBase64(s: string, maxMb: number): Uint8Array {
   return bytes
 }
 
-/** 縮小のみ・EXIF の向きを反映し、透過を白に合成して JPEG（q92）にする。 */
+/** 縮小のみ・EXIF の向きを反映し、透過を白に合成して 8bit の RGB PNG にする。 */
 export async function normalize(
   data: Uint8Array,
   opts: { maxEdge: number; maxPixels: number },
@@ -65,7 +66,8 @@ export async function normalize(
       .rotate() // EXIF の向きを反映
       .resize({ width: opts.maxEdge, height: opts.maxEdge, fit: 'inside', withoutEnlargement: true })
       .flatten({ background: '#ffffff' })
-      .jpeg({ quality: 92 })
+      .toColourspace('srgb')
+      .png({ palette: false })
       .toBuffer()
     return new Uint8Array(out)
   } catch {

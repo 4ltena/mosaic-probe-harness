@@ -1,136 +1,105 @@
-import type { Config } from './config.ts'
-import { CheckError, type ClassProbs, type Detail, type Judgment } from './types.ts'
+import { totalJudgeSlots, type Config } from './config.ts'
+import type { RenderOptions, Variant } from './layers.ts'
+import { aggregate, judge4, type Calibrator } from './probability.ts'
+import { CheckError, type Detail, type Judge } from './types.ts'
 
-// 他モジュール（layers.ts / images.ts）と構造的に同じ形。未実装でも型が通るよう、ここに書き下す。
 export interface CheckDeps {
-  renderVariants: (
-    data: Uint8Array,
-    opts: { maxRenders: number; layerPattern: string; maxPixels: number; log?: (line: string) => void },
-  ) => Promise<{ description: string; image: Uint8Array }[]>
+  renderVariants: (data: Uint8Array, opts: RenderOptions) => Promise<Variant[]>
   normalize: (data: Uint8Array, opts: { maxEdge: number; maxPixels: number }) => Promise<Uint8Array>
-  judge: (jpeg: Uint8Array, signal?: AbortSignal) => Promise<ClassProbs>
-  pOk: (p: ClassProbs) => number
-  recheck?: (jpeg: Uint8Array, p: number) => Promise<number>
+  judges: readonly Judge[]
+  cal?: Calibrator
+  recheck?: (png: Uint8Array, p: number, signal?: AbortSignal) => Promise<number>
   log?: (line: string) => void
 }
 
-interface Scored {
-  q: number
-  jpeg: Uint8Array
-  probs: ClassProbs
-  description: string
+/** 同じ描画について全モデルの確率を集め、統合後に式を適用する。 */
+export async function scoreImage(
+  png: Uint8Array,
+  judges: readonly Judge[],
+  cal?: Calibrator,
+  signal?: AbortSignal,
+) {
+  signal?.throwIfAborted()
+  const models = await Promise.all(judges.map(async (judge) => ({
+    name: judge.name, weight: judge.weight, probs: await judge.judge(png, signal),
+  })))
+  return { ...judge4(aggregate(models), cal), perModel: Object.fromEntries(models.map((m) => [m.name, m.probs])) }
 }
 
-/** 全描画を判定し、p_ok が最小の描画（再判定後の p を含む）を返す。失敗は CheckError で投げる。 */
-async function runCheck(
+interface Scored {
+  index: number
+  png: Uint8Array
+  detail: Detail
+  q: number
+}
+
+/** 全描画を判定し、最小の p_ok とその描画の較正前 q を返す。 */
+export async function checkResult(
   data: Uint8Array,
   cfg: Config,
   deps: CheckDeps,
   signal?: AbortSignal,
-): Promise<{ p: number; worst: Scored }> {
+): Promise<{ detail: Detail; q: number }> {
+  const ctl = new AbortController()
+  const workSignal = signal ? AbortSignal.any([ctl.signal, signal]) : ctl.signal
   try {
+    workSignal.throwIfAborted()
     const variants = await deps.renderVariants(data, {
       maxRenders: cfg.maxRenders,
+      maxFrames: cfg.maxFrames,
+      maxAnimSeconds: cfg.maxAnimSeconds,
       layerPattern: cfg.layerPattern,
       maxPixels: cfg.maxPixels,
-      log: deps.log,
     })
     if (variants.length === 0) throw new CheckError('bad_input', '描画できる画像がありません')
 
-    // 外側の切断と、1 件の失敗の両方で残りを止める
-    const ctl = new AbortController()
-    const onAbort = () => ctl.abort(signal?.reason)
-    signal?.addEventListener('abort', onAbort, { once: true })
-    const scores: Scored[] = []
+    let worst: Scored | undefined
     let next = 0
-    // 最初の失敗だけを記録する（残りの worker は abort で止まり、その例外は捨てる）
-    let firstErr: { e: unknown } | undefined
     const worker = async (): Promise<void> => {
-      try {
-        while (next < variants.length) {
-          ctl.signal.throwIfAborted()
-          const i = next++
-          const jpeg = await deps.normalize(variants[i]!.image, { maxEdge: cfg.maxEdge, maxPixels: cfg.maxPixels })
-          ctl.signal.throwIfAborted()
-          const probs = await deps.judge(jpeg, ctl.signal)
-          scores[i] = { q: deps.pOk(probs), jpeg, probs, description: variants[i]!.description }
+      while (next < variants.length) {
+        workSignal.throwIfAborted()
+        const index = next++
+        const variant = variants[index]!
+        const rendered = await variant.render()
+        workSignal.throwIfAborted()
+        const png = await deps.normalize(rendered, { maxEdge: cfg.maxEdge, maxPixels: cfg.maxPixels })
+        const { pOk, judgment, confidence, classes, perModel, q } =
+          await scoreImage(png, deps.judges, deps.cal, workSignal)
+        if (!worst || pOk < worst.detail.pOk || (pOk === worst.detail.pOk && index < worst.index)) {
+          worst = { q, index, png, detail: { pOk, judgment, confidence, classes, perModel, render: variant.description } }
         }
-      } catch (e) {
-        firstErr ??= { e }
-        ctl.abort(e)
       }
     }
-    const limit = Math.max(1, Math.min(variants.length, cfg.vlmBaseUrls.length * cfg.vlmSlotsPerBackend))
+    // 描画は必要になってから生成する。モデルごとの共有プールが全リクエストの同時実行数を制限する。
+    const limit = Math.max(1, Math.min(variants.length, totalJudgeSlots(cfg)))
     await Promise.all(Array.from({ length: limit }, worker))
-    signal?.removeEventListener('abort', onAbort)
-    if (firstErr) throw firstErr.e
-    signal?.throwIfAborted()
-
-    let worst = scores[0]!
-    for (const s of scores) {
-      if (s.q < worst.q) worst = s
-    }
-    let p = worst.q
-
-    // 再判定は既定オフ。範囲内の最悪ケースだけを対象にし、結果は下げるだけ
-    if (cfg.recheck && deps.recheck && p >= cfg.recheckLo && p <= cfg.recheckHi) {
+    workSignal.throwIfAborted()
+    const { detail, q, png } = worst!
+    if (cfg.recheck && deps.recheck && detail.pOk >= cfg.recheckLo && detail.pOk <= cfg.recheckHi) {
       try {
-        const r = await deps.recheck(worst.jpeg, p)
-        if (Number.isFinite(r)) p = Math.min(p, r)
-      } catch {
+        const value = await deps.recheck(png, detail.pOk, workSignal)
+        if (Number.isFinite(value) && value >= 0) detail.pOk = Math.min(detail.pOk, value)
+      } catch (e) {
+        workSignal.throwIfAborted()
+        if (e instanceof CheckError && e.kind === 'vlm') throw e
         deps.log?.('再判定に失敗したため一次判定を採用')
       }
     }
-    return { p, worst }
+    workSignal.throwIfAborted()
+    return { detail, q }
   } catch (e) {
-    if (e instanceof CheckError) throw e
+    ctl.abort(e)
     if (signal?.aborted) throw signal.reason
+    if (e instanceof CheckError) throw e
     throw new CheckError('internal', '判定中に内部エラーが起きました')
   }
 }
 
-/**
- * 判定の生の確率から詳細の classes を作る。
- * noriAsOk のとき judge は nori を ok に足しているので、ok から nori を引いて生の値に戻す。
- * kinds が無い judge（古いフェイク）は、ng をすべて forgot として扱う（最も重い扱い）。
- */
-function classesOf(p: ClassProbs, cfg: Config): Detail['classes'] {
-  const k = p.kinds
-  if (!k) return { none: p.none, ok: p.ok, forgot: p.ng, insufficient: 0, nori: 0 }
-  const ok = cfg.noriAsOk ? Math.max(0, p.ok - k.nori) : p.ok
-  return { none: p.none, ok, forgot: k.forgot, insufficient: k.insufficient, nori: k.nori }
-}
-
-/**
- * 全描画の判定を行い、p_ok の最小値を返す。失敗は CheckError で投げ、数値は返さない。
- * 同時実行は 台数 × スロット数（上限つきの並列）。1 件でも失敗したら残りを中止する。
- * signal が abort されたら、次の描画に進まず、判定要求も止める。
- */
+/** 通常応答は p_ok だけを返す。 */
 export async function check(data: Uint8Array, cfg: Config, deps: CheckDeps, signal?: AbortSignal): Promise<number> {
-  return (await runCheck(data, cfg, deps, signal)).p
+  return (await checkResult(data, cfg, deps, signal)).detail.pOk
 }
 
-/**
- * check と同じ判定を行い、詳細（p_ok・最悪の描画の説明・生の種類確率）を返す。
- * pOk は check の戻りと同じ。render と classes は最悪の描画（再判定で下がっても元の描画）のもの。
- */
-export async function checkDetail(
-  data: Uint8Array,
-  cfg: Config,
-  deps: CheckDeps,
-  signal?: AbortSignal,
-): Promise<Detail> {
-  const { p, worst } = await runCheck(data, cfg, deps, signal)
-  const classes = classesOf(worst.probs, cfg)
-  return { pOk: p, ...judgmentOf(classes), render: worst.description, classes }
-}
-
-// 同率のときの優先順（重い順）。見逃しを避けるため、問題の種類を先に置く。
-const JUDGMENT_ORDER: Judgment[] = ['forgot', 'insufficient', 'nori', 'ok', 'none']
-
-/** 5 択の確率から総合判断（最も確率が高い答え）とその確率を決める。同率なら重い順。 */
-export function judgmentOf(classes: Detail['classes']): { judgment: Judgment; confidence: number } {
-  let best: Judgment = 'forgot'
-  for (const j of JUDGMENT_ORDER) if (classes[j] > classes[best]) best = j
-  return { judgment: best, confidence: classes[best] }
+export async function checkDetail(data: Uint8Array, cfg: Config, deps: CheckDeps, signal?: AbortSignal): Promise<Detail> {
+  return (await checkResult(data, cfg, deps, signal)).detail
 }

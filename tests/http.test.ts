@@ -287,20 +287,22 @@ describe('createHttpServer', () => {
 const DETAIL: Detail = {
   pOk: 0.12,
   judgment: 'forgot',
-  confidence: 0.62,
+  confidence: 0.82,
   render: 'モザイク名のレイヤーを非表示',
-  classes: { none: 0.01, ok: 0.1, forgot: 0.62, insufficient: 0.2, nori: 0.07 },
+  classes: { ok: 0.11, forgot: 0.82, nori: 0.07 },
+  perModel: { default: { none: 0.01, processed: 0.1, forgot: 0.82, nori: 0.07 } },
 }
 const DETAIL_BODY = {
   p_ok: 0.12,
   judgment: 'forgot',
-  confidence: 0.62,
+  confidence: 0.82,
   render: 'モザイク名のレイヤーを非表示',
-  classes: { none: 0.01, ok: 0.1, forgot: 0.62, insufficient: 0.2, nori: 0.07 },
+  classes: { ok: 0.11, forgot: 0.82, nori: 0.07 },
+  per_model: DETAIL.perModel,
 }
 
 describe('createHttpServer detail', () => {
-  it('?detail=1 は詳細 JSON（p_ok・render・classes の 5 種）を返す', async () => {
+  it('?detail=1 は詳細 JSON（p_ok・render・classes と per_model）を返す', async () => {
     let detailCalls = 0
     let checkCalls = 0
     const { base } = await start(
@@ -441,7 +443,7 @@ describe('createHttpServer fields（返す項目の選択）', () => {
     const { r } = await post('fields=confidence')
     expect(r.status).toBe(200)
     const body = await r.json()
-    expect(body).toEqual({ p_ok: 0.12, confidence: 0.62 })
+    expect(body).toEqual({ p_ok: 0.12, confidence: 0.82 })
     expect(Object.keys(body)).toEqual(['p_ok', 'confidence'])
   })
 
@@ -450,16 +452,16 @@ describe('createHttpServer fields（返す項目の選択）', () => {
       const { r } = await post(q)
       const body = await r.json()
       expect(r.status).toBe(200)
-      expect(body).toEqual({ p_ok: 0.12, judgment: 'forgot', confidence: 0.62 })
+      expect(body).toEqual({ p_ok: 0.12, judgment: 'forgot', confidence: 0.82 })
       expect(Object.keys(body)).toEqual(['p_ok', 'judgment', 'confidence'])
     }
   })
 
-  it('fields=render,classes も選べる（detail=1 は 4 項目すべて）', async () => {
+  it('fields=render,classes も選べる（detail=1 は per_model も含む）', async () => {
     const { r } = await post('fields=render,classes')
     expect(Object.keys(await r.json())).toEqual(['p_ok', 'render', 'classes'])
     const all = await post('detail=1')
-    expect(Object.keys(await all.r.json())).toEqual(['p_ok', 'judgment', 'confidence', 'render', 'classes'])
+    expect(Object.keys(await all.r.json())).toEqual(['p_ok', 'judgment', 'confidence', 'render', 'classes', 'per_model'])
   })
 
   it('fields と detail=1 を併記したら fields が優先', async () => {
@@ -491,7 +493,7 @@ describe('createHttpServer fields（返す項目の選択）', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ image_base64: Buffer.from('PNGDATA').toString('base64') }),
     })
-    expect(await r.json()).toEqual({ p_ok: 0.12, confidence: 0.62 })
+    expect(await r.json()).toEqual({ p_ok: 0.12, confidence: 0.82 })
   })
 
   it('選ばなかった項目が範囲外でも、数値も JSON も返さない（500）', async () => {

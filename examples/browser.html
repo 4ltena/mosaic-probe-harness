@@ -29,7 +29,7 @@
   <input id="key" type="password" autocomplete="off">
 </label>
 <label>画像（PNG / JPEG / WebP / GIF / TIFF / PSD）
-  <input id="file" type="file" accept="image/*,.psd">
+  <input id="file" type="file" accept=".png,.jpg,.jpeg,.gif,.webp,.tif,.tiff,.psd">
 </label>
 <label>
   <input id="withDetail" type="checkbox"> 詳細も取得（問題の種類の参考値）
@@ -63,7 +63,7 @@
     try {
       // 生バイトをそのまま送る（PSD も可）。詳細を選んだときだけ ?detail=1 を付ける
       const url = base + '/v1/check' + (withDetail ? '?detail=1' : '');
-      const res = await fetch(url, { method: 'POST', headers, body: file });
+      const res = await fetch(url, { method: 'POST', headers, body: file, signal: AbortSignal.timeout(300_000) });
       const text = await res.text();
       if (!res.ok) {
         let msg = text;
@@ -82,9 +82,8 @@
         $('detail').textContent =
           '総合判断: ' + d.judgment + '（確率 ' + Number(d.confidence).toFixed(3) + '）\n' +
           '最悪の描画: ' + d.render + '\n' +
-          '対象なし ' + c.none.toFixed(3) + ' / 処理済み ' + c.ok.toFixed(3) + '\n' +
-          'かけ忘れ ' + c.forgot.toFixed(3) + ' / 不十分 ' + c.insufficient.toFixed(3) + ' / ノリ ' + c.nori.toFixed(3) + '\n' +
-          '（種類は参考。判断の主役は p_ok）';
+          '対象なし・処理済み ' + c.ok.toFixed(3) + '\n' +
+          'かけ忘れ・処理不足 ' + c.forgot.toFixed(3) + ' / ノリ ' + c.nori.toFixed(3);
       }
     } catch (e) {
       $('error').textContent = String(e.message ?? e);

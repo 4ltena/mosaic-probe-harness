@@ -3,16 +3,16 @@ import { resolve } from 'node:path'
 import type { Server } from 'node:http'
 import { pathToFileURL } from 'node:url'
 import { streamSimple } from '@earendil-works/pi-ai/api/openai-completions'
-import { check, checkDetail, type CheckDeps } from './check.ts'
-import { assertSafeBind, loadConfig, type Config } from './config.ts'
+import { check, checkDetail, scoreImage, type CheckDeps } from './check.ts'
+import { assertSafeBind, loadConfig, totalJudgeSlots, type Config } from './config.ts'
 import { createGate } from './gate.ts'
 import { normalize } from './images.ts'
 import { createHttpServer } from './http.ts'
 import { renderVariants } from './layers.ts'
 import { createMcpHandler } from './mcp.ts'
-import { Calibrator, pOk } from './probability.ts'
+import { Calibrator } from './probability.ts'
 import { createRecheck } from './recheck.ts'
-import { buildJudge } from './vlm.ts'
+import { buildJudges } from './vlm.ts'
 
 export interface ServerOverrides {
   log?: (line: string) => void
@@ -23,17 +23,17 @@ export function buildServer(cfg: Config, overrides: ServerOverrides = {}): Serve
   assertSafeBind(cfg)
   const log = overrides.log ?? ((line: string) => console.log(line))
   const cal = Calibrator.load(cfg.calibrationPath)
-  const { judge } = buildJudge(cfg)
+  const judges = buildJudges(cfg)
 
   // 再判定は既定オフ。有効時だけ Pi のチャット（llama-server の OpenAI 互換口）を渡す。
   // 分類用の max_tokens:1 はここでは使わない。crop のツール呼び出し JSON が途中で切れるため。
   // 計画書に無い配線（Pi のチャット経路）。偽 llama-server の e2e（RECHECK=1）で確かめている。
   // 再判定は台の 1 つ目だけを使う（振り分けの対象外。既定オフの機能）
-  const root = cfg.vlmBaseUrls[0] ?? cfg.vlmBaseUrl
+  const primary = cfg.judges[0]!
+  const root = primary.urls[0]!
   const recheck = cfg.recheck
     ? createRecheck(cfg, {
-        judge,
-        pOk: (p) => pOk(p, cal),
+        score: async (png, signal) => (await scoreImage(png, judges, cal, signal)).pOk,
         chat: {
           streamFn: (model: unknown, context: unknown, options?: object) =>
             streamSimple(model as never, context as never, {
@@ -41,8 +41,8 @@ export function buildServer(cfg: Config, overrides: ServerOverrides = {}): Serve
               apiKey: cfg.vlmApiKey ?? 'none',
             } as never),
           model: {
-            id: cfg.vlmModel,
-            name: cfg.vlmModel,
+            id: primary.model,
+            name: primary.model,
             api: 'openai-completions',
             provider: 'llama-cpp-local',
             baseUrl: `${root}/v1`,
@@ -57,14 +57,12 @@ export function buildServer(cfg: Config, overrides: ServerOverrides = {}): Serve
       })
     : undefined
 
-  // 同時リクエスト数 = 総スロット数（台数 × スロット数）。1 台・スロット 1 なら従来どおり 1
-  const slots = cfg.vlmBaseUrls.length * cfg.vlmSlotsPerBackend
-  const gate = createGate(slots, cfg.queueTimeoutMs)
+  const gate = createGate(totalJudgeSlots(cfg), cfg.queueTimeoutMs)
   const deps: CheckDeps = {
     renderVariants,
     normalize,
-    judge,
-    pOk: (p) => pOk(p, cal),
+    judges,
+    cal,
     recheck,
     log,
   }

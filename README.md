@@ -3,11 +3,12 @@
 画像（PSD などのレイヤー付きファイルを含む）を受け取り、**「モザイク処理が必要な部位が存在しない、または十分に処理されている確率（`p_ok`）」**を `0` 〜 `1` の数値 1 個で返すローカル API サーバーです。
 
 - **推論バックエンド**: 同一ホスト（またはローカルネットワーク）上の `llama.cpp`（`llama-server`、マルチモーダル対応 Qwen VLM）を利用します。
-- **確率算出**: `llama-server` による 5 択分類（A: 対象なし / B: 処理済み / C: かけ忘れ / D: 不十分 / E: ノリ）の次トークン `logprobs` から確率を計算します。`p_ok` は従来どおりの数値で、問題の種類（かけ忘れ・不十分・ノリ）は `detail` を付けたときだけ返します。
+- **確率算出**　モデルの4語 `none`、`processed`、`forgot`、`nori` の先頭トークンの確率を集め、複数モデルの構成では描画ごとに重み付き平均を取ります。詳細応答には総合判断とモデル別の確率が入ります。
 - **呼び出し方法**: REST API（ブラウザ・Node.js などの HTTP クライアント）および MCP（Streamable HTTP）に対応しています。
-- **判定の委譲**: サーバーは確率値（`p_ok`）のみを返します。しきい値に基づく OK / NG の最終判定は呼び出し側で行ってください。
+- **判定の委譲**: 既定の応答は確率値 `p_ok` です。しきい値に基づく OK / NG の最終判定は呼び出し側で行ってください。
 
 > **関連ドキュメント**
+> - v1.1 の API 差分と移行時の確認項目は [CHANGELOG.md](CHANGELOG.md)
 > - AI エージェント向けの呼び出し仕様・注意事項: [docs/agent-usage.md](docs/agent-usage.md)
 > - 実機での前提確認・ルール同期・評価・較正・複数台の手順: [docs/operations.md](docs/operations.md)
 > - 設計の要点（確率の作り方、Pi の使い方、レイヤー安全）: [docs/design.md](docs/design.md)
@@ -18,7 +19,7 @@
 ## 動作要件
 
 - **Node.js**: 22.19 以上
-- **llama.cpp (`llama-server`)**: `--mmproj` を指定して VLM 推論・`logprobs` を返せるビルド
+- **llama.cpp (`llama-server`)**　`--mmproj` を指定して PNG での VLM 推論、`logprobs`、`/tokenize` の `with_pieces` に対応したビルド
 
 ---
 
@@ -90,6 +91,14 @@ $env:MOSAIC_API_KEY = "<十分に長いランダム文字列>"
 | `/mcp` | `POST` | 必要（キー設定時） | MCP（Streamable HTTP）による画像判定 |
 | `/healthz` | `GET` | 不要 | ヘルスチェック（`200 ok`） |
 
+| 送信方法 | ヘッダー | リクエストに入れる画像 |
+|---|---|---|
+| REST の生バイト | `Content-Type: application/octet-stream` | ファイルのバイト列を本文に直接入れる |
+| REST の JSON | `Content-Type: application/json` | JSON の `image_base64` に Base64 または Data URI を入れる |
+| MCP の `check_mosaic` | `Content-Type: application/json`、`Accept: application/json, text/event-stream` | ツール引数の `image_base64` に Base64 または Data URI を入れる |
+
+1回の判定につき画像1ファイルを送ります。画像データの既定上限は **15 MiB** で、Base64 は復号後のバイト数で判定します。キーを設定したサーバーには `Authorization: Bearer <APIキー>` を付けます。
+
 ### REST: `POST /v1/check`
 
 成功時は HTTP `200` で、レスポンスボディに**数値 1 個だけ**を返します（例: `0.8732`）。既定の応答は今までどおり数値だけです。失敗時は数値を返しません。
@@ -108,15 +117,15 @@ curl -X POST "http://<サーバーのIP>:8790/v1/check?detail=1" \
 成功時の応答（`200`、`application/json`）の例:
 
 ```json
-{"p_ok":0.12,"judgment":"forgot","confidence":0.62,"render":"モザイク名のレイヤーを非表示","classes":{"none":0.01,"ok":0.10,"forgot":0.62,"insufficient":0.20,"nori":0.07}}
+{"p_ok":0.12,"judgment":"forgot","confidence":0.88,"render":"モザイク名のレイヤーを非表示","classes":{"ok":0.12,"forgot":0.88,"nori":0},"per_model":{"default":{"none":0.02,"processed":0.1,"forgot":0.88,"nori":0}}}
 ```
 
-- `p_ok`: 既定の応答と同じ値（較正済み。全描画のうち最小）。
-- `judgment`: **総合判断**。`classes` の 5 択のうち、最も確率が高い答え（`none` / `ok` / `forgot` / `insufficient` / `nori`）。同率のときは重い順（`forgot` > `insufficient` > `nori` > `ok` > `none`）。
-- `confidence`: **総合判断の確率**（0〜1）。`classes[judgment]` と同じ値で、較正前の生の確率。この判断が、どれくらいの確からしさで選ばれたかを示す。
-- `render`: 最悪（`p_ok` が最小）の描画の説明。例: 「見えているとおり」「モザイク名のレイヤーを非表示」。
-- `classes`: その最悪の描画について、モデルが出した**較正前の生の確率**（合計 1）。`none`=対象なし、`ok`=処理済み、`forgot`=かけ忘れ、`insufficient`=不十分、`nori`=ノリ。`p_ok` とは直接の換算関係がないので、`p_ok` の代わりに使わないでください。
-- `judgment` と `confidence` は参考情報です。問題が 3 種類に割れていると（例: かけ忘れ 0.2・不十分 0.2・ノリ 0.2、対象なし 0.35）、問題の合計（0.6）のほうが大きくても `judgment` は `none` になり、`confidence` も低くなります。**問題があるかどうかは `p_ok` で見て、`judgment` と `confidence` は「どの種類か」と「その判断の確からしさ」を知るために使ってください。**
+- `p_ok` は全描画の最小値です。較正を設定している場合は適用済みです。
+- `judgment` は `ok`、`forgot`、`nori` のいずれかです。`ok` の確率と NG 側で最大の確率を比較し、同率なら `ok` を選びます。NG の種類が同率なら `forgot` を選びます。
+- `confidence` は選ばれた `judgment` の較正前の確率です。
+- `render` は `p_ok` が最小だった描画です。アニメーションでは「フレーム 4/12」のように表示します。
+- `classes` はその描画の統合済みの確率です。`ok` は対象なしと処理済みの合計、`forgot` はかけ忘れ・処理不足、`nori` は黒い帯や枠による処理です。
+- `per_model` はその描画のモデル別の4語の確率です。キーは `JUDGES` の `name` です。
 - 失敗時は、既定の応答と同じエラー（`{"error": …}`）だけを返し、数値も詳細も返しません。
 - `detail` を付けても、判定の内容・時間は変わりません（同じ描画を判定し、結果の表示を増やすだけです）。
 
@@ -127,10 +136,10 @@ curl -X POST "http://<サーバーのIP>:8790/v1/check?detail=1" \
 | 欲しいもの | クエリ | 応答 |
 |---|---|---|
 | 総合判断だけ | `?fields=judgment` | `{"p_ok":0.12,"judgment":"forgot"}` |
-| 総合判断の確率だけ | `?fields=confidence` | `{"p_ok":0.12,"confidence":0.62}` |
-| 両方 | `?fields=judgment,confidence` | `{"p_ok":0.12,"judgment":"forgot","confidence":0.62}` |
+| 総合判断の確率だけ | `?fields=confidence` | `{"p_ok":0.12,"confidence":0.88}` |
+| 両方 | `?fields=judgment,confidence` | `{"p_ok":0.12,"judgment":"forgot","confidence":0.88}` |
 
-- 選べる項目は `judgment`、`confidence`、`render`、`classes` です（例: `?fields=render,classes`）。`detail=1` は、この 4 つすべてを返します。
+- 選べる項目は `judgment`、`confidence`、`render`、`classes` です（例 `?fields=render,classes`）。`per_model` を取得するには `fields` を省略し、`detail=1` を指定します。
 - 項目の並びは、指定した順に関わらず固定です（`p_ok`、`judgment`、`confidence`、`render`、`classes`）。重複は 1 つにまとめます。
 - `fields` を付けると `detail` は不要です。併記した場合は `fields` が優先されます。
 - **不正な指定は黙って捨てず `400`（`bad_input`）**になり、判定も行いません。空（`fields=`）、未知の項目、空の要素（`fields=judgment,`）が対象です。数値も詳細も返りません。
@@ -140,7 +149,7 @@ curl -X POST "http://<サーバーのIP>:8790/v1/check?detail=1" \
 ブラウザの `fetch` で `File` / `Blob` をそのまま渡す場合や、PSD ファイルを送信する場合に適しています。`Content-Type` が `application/json` 以外（`application/octet-stream` や `image/*` など）の場合は生バイトとして読み取ります。
 
 ```sh
-curl -X POST http://<サーバーのIP>:8790/v1/check \
+curl -X POST http://127.0.0.1:8790/v1/check \
   -H "Authorization: Bearer $MOSAIC_API_KEY" \
   -H "Content-Type: application/octet-stream" \
   --data-binary @image.psd
@@ -151,7 +160,7 @@ curl -X POST http://<サーバーのIP>:8790/v1/check \
 `Content-Type: application/json` の場合は、`image_base64` フィールドに Base64 文字列または Data URI を指定します。
 
 ```sh
-curl -X POST http://<サーバーのIP>:8790/v1/check \
+curl -X POST http://127.0.0.1:8790/v1/check \
   -H "Authorization: Bearer $MOSAIC_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"image_base64":"data:image/png;base64,iVBORw0KGgo..."}'
@@ -161,10 +170,27 @@ curl -X POST http://<サーバーのIP>:8790/v1/check \
 
 ステートレスな Streamable HTTP（JSON 応答）エンドポイントです。HTTP リクエスト時はヘッダに `Accept: application/json, text/event-stream` を指定してください。
 
-- **公開ツール**: `check_mosaic({ image_base64: string, detail?: boolean })`（公開するツールは `check_mosaic` の 1 つだけです）
+- **公開ツール**: `check_mosaic({ image_base64: string, detail?: boolean, fields?: string[] })`（公開するツールは `check_mosaic` の 1 つだけです）
 - **成功時**: `content[0].text` に数値文字列（例: `"0.8732"`）のみを返します。`fields`（`["judgment"]` など）か `detail: true` のときは、`content[0].text` に REST の詳細応答と同じ JSON 文字列を入れます（`JSON.parse` で読めます。形式は上の「詳細を取得する」を参照）。
 - **失敗時**: `isError: true` となり、`content[0].text` は `error: <種別>: <メッセージ>` で始まります（数値は含みません）。**HTTP ステータスは `200` のままなので、必ず `isError` を確認してください。**
 - `initialize` やセッション ID は不要で、`tools/call` だけで呼べます。
+
+`tools/call` の本文例です。`<PNGのBase64>` はファイルをエンコードした文字列に置き換えてください。
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "check_mosaic",
+    "arguments": {
+      "image_base64": "<PNGのBase64>",
+      "fields": ["judgment", "confidence"]
+    }
+  }
+}
+```
 
 > [!NOTE]
 > REST の JSON 送信では `Content-Type` を小文字の `application/json` で始めてください（大文字小文字を区別します。外れると生バイト扱いになり、`415` になります）。`https://` のページから `http://` の API は、ブラウザの混在コンテンツ制限で呼べません。
@@ -188,9 +214,9 @@ curl http://<サーバーのIP>:8790/healthz
 | 403 | `forbidden` | 接続元 IP が `MOSAIC_ALLOW_CIDRS` の許可範囲外 |
 | 404 | `not_found` | 存在しないパス |
 | 405 | `method_not_allowed` | 許可されていない HTTP メソッド |
-| 413 | `too_large` | リクエストボディが `MAX_IMAGE_MB` 相当の上限を超過 |
+| 413 | `too_large` | 受信サイズ、フレーム・ページ数、再生時間、または PSD の描画候補数が上限を超過 |
 | 501 | `not_implemented` | `detail` の詳細応答を実装していないビルドで `detail=1` を指定したとき（通常の構成では発生しません） |
-| 415 | `unsupported` | 未対応の画像形式（HEIC・BMP・SVG・PSB・16/32bit PSD・PDF 等） |
+| 415 | `unsupported` | 未対応の画像形式（APNG・HEIC・BMP・SVG・PSB・16/32bit PSD・PDF 等） |
 | 500 | `internal` | サーバー内部エラー（設定ファイル読込不可など） |
 | 502 | `vlm` | `llama-server` 停止・タイムアウト・応答形式不正 |
 | 503 | `busy` | 実行待ちが `QUEUE_TIMEOUT_S` を超過（`Retry-After: 5` 付与） |
@@ -204,18 +230,16 @@ curl http://<サーバーのIP>:8790/healthz
 - **値が低いほど危険**（未処理・処理不十分である可能性が高い）ことを意味します。
 - 「何未満を NG・要確認とするか」のしきい値は利用者が運用要件に合わせて決定してください（評価スクリプト `eval/run_eval.ts` が算出する推奨しきい値は参考表示用であり、サーバーには自動反映されません）。
 
-### 問題の種類（かけ忘れ・不十分・ノリ）
+### モデルの4語と集計
 
-`p_ok` は問題の種類を分けずに数えた値です。種類は `detail` を付けたときの `classes` に入ります（参考情報。`p_ok` が主の値です）。
-
-| 種類 | 意味 |
+| 語 | 意味 |
 |---|---|
-| かけ忘れ（`forgot`） | 対象が隠されていない |
-| 不十分（`insufficient`） | モザイクはあるが、範囲が小さい・粗さが足りない・薄い・ぼかしだけ |
-| ノリ（`nori`） | モザイクではなく、黒い帯・黒い枠・黒い塗りで隠している |
+| `none` | 対象が写っていない |
+| `processed` | 対象が十分に処理されている |
+| `forgot` | 対象が未処理、または範囲・粗さ・濃さなどが不足して読み取れる |
+| `nori` | 黒い帯・枠・塗りで隠している |
 
-- 既定では、3 種類すべてを「問題あり」として `p_ok` に数えます。
-- 環境変数 `NORI_AS_OK=1` を設定すると、ノリを問題として数えず、処理済み（`ok`）として扱います。`p_ok` の計算がこの分だけ変わります。`detail` の `classes.nori` は、この設定にかかわらず生の値のまま返ります。
+モデルの出力を描画ごとに統合し、`okMass = P(none) + P(processed)`、`ngMass = max(P(forgot), P(nori))` を求めます。`q = ngMass / (okMass + ngMass)` を Platt 較正し、`p_ok = 1 - cal(q)` とします。[確率の設計](docs/design.md)
 
 ---
 
@@ -230,12 +254,12 @@ curl http://<サーバーのIP>:8790/healthz
 | `VLM_BASE_URL` | `http://127.0.0.1:8080` | `llama-server` のベース URL（単一台の既定） |
 | `VLM_BASE_URLS` | なし | 複数台の `llama-server` のベース URL をカンマ区切りで指定。未設定なら `VLM_BASE_URL` の 1 件。末尾の `/` と `/v1` は除去、重複は除く |
 | `VLM_SLOTS_PER_BACKEND` | `1` | 1 台あたりの同時実行数。`llama-server` の `--parallel` に合わせる（総スロット数 = 台数 × この値。同時リクエスト数の上限になる） |
+| `JUDGES` | 未設定 | モデル別の設定を JSON 配列で指定。各要素は `{name, model, urls, slots, weight}` で、`slots` と `weight` の既定値は `1`。未設定時は `VLM_BASE_URL` または `VLM_BASE_URLS` の1モデル構成を使用 |
 | `VLM_MODEL` | `qwen3.8-flash-next` | `llama-server` に渡すモデル名 |
 | `VLM_API_KEY` | なし | `llama-server` 側で Bearer 認証が必要な場合のみ設定 |
 | `VLM_TIMEOUT_MS` | `120000` | `llama-server` 呼び出し 1 回あたりのタイムアウト（ミリ秒） |
-| `VLM_EXTRA_BODY` | なし | リクエスト JSON のトップレベルにマージする追加設定（JSON オブジェクト文字列。例: `chat_template_kwargs` の上書き） |
+| `VLM_EXTRA_BODY` | なし | リクエスト JSON のトップレベルにマージする追加設定（JSON オブジェクト文字列。例 `{"top_k":20}`。分類に使う出力形式と `enable_thinking: false` は固定） |
 | `CLASSIFY_TEMPERATURE` | `1` | 分類 logits を割る温度パラメータ。`1` より大きいと確率分布が滑らかになります |
-| `NORI_AS_OK` | 未設定（ノリを問題とする） | `1` のとき、ノリ（黒い帯・枠で隠している）を問題として数えず、処理済みとして扱います。それ以外の値は無視されます |
 
 ### 画像・レイヤー制限
 
@@ -244,7 +268,9 @@ curl http://<サーバーのIP>:8790/healthz
 | `MAX_EDGE` | `2048` | VLM 入力時の長辺最大ピクセル数（拡大はせず縮小のみ） |
 | `MAX_IMAGE_MB` | `15` | 受信画像サイズの上限（MiB）。超過時はメモリに蓄積せず `413` を返却 |
 | `MAX_PIXELS` | `100000000` | 画像デコード時の総画素数上限（展開爆弾対策） |
-| `MAX_RENDERS` | `8` | 1 ファイルあたりのレンダリング（判定）回数の上限 |
+| `MAX_RENDERS` | `32` | PSD の描画候補数の上限。2以上の安全な整数 |
+| `MAX_FRAMES` | `100` | GIF・WebP のフレーム数と TIFF のページ数の上限。超過は `413` |
+| `MAX_ANIM_SECONDS` | `10` | GIF・WebP の1周分の再生時間上限（秒）。超過は `413` |
 | `MOSAIC_LAYER_PATTERN` | `モザイク\|mosaic\|pixel\|ぼかし\|blur\|censor\|修正\|規制` | モザイク層とみなすレイヤー名の正規表現（大文字・小文字を区別しない） |
 
 ### サーバー公開・セキュリティ
@@ -269,7 +295,7 @@ curl http://<サーバーのIP>:8790/healthz
 ### 設定ファイル
 
 - **`rules.local.md` / `rules.md`**: モデルへ渡す判定基準プロンプト。`rules.local.md` が存在する場合は優先され、なければ公開用の `rules.md` が使われます。
-- **`calibration.json`**: 評価スクリプト（`--write`）で生成される確率較正パラメータ（Platt スケーリングの `a`, `b`）。存在しない場合は恒等変換（無較正）になります。
+- **`calibration.json`**: 評価スクリプト（`--write`）で生成される確率較正パラメータ（`version: "v1.1"` と Platt スケーリングの `a`, `b`）。未生成時と旧式のファイルがある場合は恒等変換を使います。
 
 ---
 
@@ -277,11 +303,24 @@ curl http://<サーバーのIP>:8790/healthz
 
 ### 対応フォーマット
 
-ファイル形式は拡張子ではなく**先頭バイト（マジックバイト）**で判定します。
+ファイル形式の判定には**ファイルの先頭バイト（マジックバイト）**を使います。
 
-- **対応**: PNG / JPEG / WebP / GIF / TIFF（`sharp` を使用。アニメ GIF や複数ページ TIFF は全ページを判定）/ PSD（`ag-psd` を使用、**8bit のみ**）
-- **非対応（`415`）**: HEIC・BMP・SVG・PSB・16bit/32bit PSD・CLIP・XCF・PDF など
-  - SVG は外部参照によるセキュリティリスクがあるため明示的に拒否します。
+| 形式 | 検査内容と既定上限 |
+|---|---|
+| PNG・JPEG | 静止画1枚を判定 |
+| GIF・WebP | 静止画は1枚。アニメーションは1周10秒以下かつ100フレーム以下なら全フレームを判定 |
+| TIFF | 100ページ以下なら全ページを判定。再生時間の上限は適用外 |
+| PSD（8bit） | レイヤー構成を保持した原本を送信。候補が既定32件以下なら全件を判定 |
+
+APNG・AVIF・HEIC・BMP・SVG・PSB・16/32bit PSD・CLIP・XCF・PDF などは未対応です。REST は `415 unsupported`、MCP は `unsupported` のツールエラーを返します。
+
+モデルには各描画を**減色なしの8bit RGB PNG**として送ります。向きを整え、長辺の上限を超える画像は縮小し、透過は白に合成します。切り出し再判定も PNG を使います。PSD やアニメーションは原本のまま API に送ってください。
+
+### アニメーションの上限
+
+GIF・WebP は既定で **10秒以下、合計100フレーム以下**です。1周分のフレーム遅延を合計し、0 以下の遅延は 10 ms として数えます。上限内は全フレームを判定して最小値を採用します。上限を超えると、REST は `413`、MCP は `isError: true` の `too_large` を返します。TIFF はページ数の上限だけを適用します。
+
+1フレームあたり約2.5秒で直列処理する構成では、100フレームで約4分かかります。クライアントのタイムアウトは5分以上を目安にし、モデルの速度と並列数に合わせて調整してください。
 
 ### レイヤー検査の仕組み
 
@@ -292,7 +331,21 @@ curl http://<サーバーのIP>:8790/healthz
 3. **名前が `MOSAIC_LAYER_PATTERN` に一致するレイヤーを非表示にした状態**
 4. **可視レイヤーを上から 1 枚ずつ外した状態**（名前が変更されたモザイク層も検出するため）
 
-描画数は最大 `MAX_RENDERS` 件までとし、上限で打ち切った場合はログに切り捨て件数を記録します。また、いずれか 1 件でも描画や VLM 判定に失敗した場合は、部分的な数値を返さずリクエスト全体をエラーにします。
+PSD ごとに候補数を数え、上限内なら全件を判定します。上限は既定32件で、管理者が `MAX_RENDERS` で変更できます。最初の3候補がそろう場合、既定値では可視レイヤーを1枚ずつ外す検査を29件まで実行できます。
+
+上限を超えた場合は、画像の合成・モデル判定に進まずエラーを返します。REST は `413`、MCP は `isError: true` とし、REST の本文と MCP の `structuredContent` に次の情報を含めます。
+
+```json
+{
+  "error": "too_large",
+  "reason": "psd_render_limit",
+  "required_renders": 62,
+  "max_renders": 32,
+  "message": "PSD の検査には62件の描画が必要ですが、上限は32件です"
+}
+```
+
+描画やモデル判定に失敗した場合も、リクエスト全体をエラーにします。
 
 ### PSD 合成の制限事項
 
@@ -343,8 +396,8 @@ curl http://<サーバーのIP>:8790/healthz
 
 ## 制限事項と前提
 
-- **同時実行**: 同時実行数は総スロット数（台数 × `VLM_SLOTS_PER_BACKEND`）です。既定の 1 台・スロット 1 では直列になります。処理中に届いたリクエストはキューで待機し、`QUEUE_TIMEOUT_S` を超えると `503` エラーになります。
-- **複数台の振り分け**: 空きがあり実行中の少ない台へ振ります。接続失敗・5xx・タイムアウトした台は 15 秒外し、別の台で 1 回だけ再試行します。全台が外れていれば `502`（数値は返しません）。Mac Studio 2 台の構成は [docs/operations.md](docs/operations.md) を参照してください。再判定（`RECHECK=1`）は既定オフで、振り分けの対象外（台の 1 つ目だけを使います）。
+- **同時実行**　リクエストの同時実行上限は、各モデルの「接続先数 × 1台あたりのスロット数」の合計です。既定の 1 台・1 スロットでは直列になります。空きがなく待機し、`QUEUE_TIMEOUT_S` を超えると `503` エラーになります。
+- **複数台の振り分け**　各モデルの接続先プールで空きスロットに配分します。複製のうち失敗した台を15秒外し、同じモデルの別の台で1回だけ再試行します。どれか1モデルでも最終的に失敗すると `502` を返します。再判定では最初の接続先に領域を提案させ、切り出し後の判定を全モデルで行います。[複数台の運用](docs/operations.md)
 - **実機要件**: 判定基準の確定、評価用データの用意、`llama-server` の起動条件（GGUF モデル / mmproj 選定）は運用者側で行います。`llama-server` が前提条件を満たしているかは [docs/operations.md](docs/operations.md) で確認してください。
 
 ---

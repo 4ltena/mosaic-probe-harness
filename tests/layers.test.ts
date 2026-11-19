@@ -1,8 +1,8 @@
 import { writePsd, type Layer } from 'ag-psd'
 import sharp from 'sharp'
-import { describe, expect, it, vi } from 'vitest'
-import { DEFAULT_LAYER_PATTERN } from '../src/config.ts'
-import { renderVariants, type RenderOptions } from '../src/layers.ts'
+import { describe, expect, it } from 'vitest'
+import { DEFAULT_LAYER_PATTERN, loadConfig } from '../src/config.ts'
+import { renderVariants as planVariants, type RenderOptions } from '../src/layers.ts'
 import { CheckError } from '../src/types.ts'
 
 const W = 4
@@ -27,6 +27,8 @@ const psdBytes = (children: Layer[], comp?: number[]): Uint8Array =>
   new Uint8Array(writePsd({ width: W, height: H, children, ...(comp ? { imageData: solid(comp) } : {}) }))
 
 const opts = (over: Partial<RenderOptions> = {}): RenderOptions => ({
+  maxFrames: 100,
+  maxAnimSeconds: 10,
   maxRenders: 8,
   layerPattern: DEFAULT_LAYER_PATTERN,
   maxPixels: 100_000_000,
@@ -41,6 +43,11 @@ async function pixelAt(png: Uint8Array, x: number, y: number): Promise<number[]>
 }
 /** 中心画素の RGB */
 const centerPixel = (png: Uint8Array): Promise<number[]> => pixelAt(png, Math.floor(W / 2), Math.floor(H / 2))
+async function renderVariants(data: Uint8Array, options: RenderOptions) {
+  const plans = await planVariants(data, options)
+  return Promise.all(plans.map(async (plan) => ({ description: plan.description, image: await plan.render() })))
+}
+
 const centers = (images: { image: Uint8Array }[]) => Promise.all(images.map((v) => centerPixel(v.image)))
 /** 最も強いチャンネルの番号（0=R, 1=G, 2=B）。圧縮の誤差を許すための比較。 */
 const dominant = (px: number[]): number => px.indexOf(Math.max(...px))
@@ -124,12 +131,31 @@ describe('renderVariants: PSD', () => {
     expect(await centerPixel(find(vs, '非表示レイヤーも表示').image)).toEqual([255, 0, 0])
   })
 
-  it('レイヤーが 10 枚で maxRenders=4 なら 4 件で、切り捨て件数をログに出す', async () => {
-    const children = Array.from({ length: 10 }, (_, i) => layer(`L${i + 1}`, WHITE))
-    const log = vi.fn()
-    const vs = await renderVariants(psdBytes(children), opts({ maxRenders: 4, log }))
-    expect(vs).toHaveLength(4)
-    expect(log).toHaveBeenCalledWith(expect.stringMatching(/省略 8 件/))
+  it('PSD の定義済み候補を全件返すか、上限超過なら必要件数を報告する', async () => {
+    const limit = opts({ maxRenders: 5 })
+    const plain = layer('背景', RED)
+    const named = layer('モザイク 1', WHITE)
+    const otherNamed = layer('モザイク 2', WHITE)
+    await expect(planVariants(psdBytes([plain, layer('L2', WHITE)]), limit)).resolves.toHaveLength(4)
+    const group: Layer = { name: 'モザイク グループ', children: [layer('L2', WHITE)] }
+    const atLimit = await planVariants(psdBytes([plain, group, layer('L3', [0, 0, 0, 0])]), limit)
+    expect(atLimit).toHaveLength(5)
+    const groupHidden = find(atLimit, 'モザイク名のレイヤーを非表示')
+    expect(await centerPixel(await groupHidden.render())).toEqual([255, 0, 0])
+    expect(atLimit.some((plan) => plan.description === '「L2」を外す')).toBe(false)
+    await expect(planVariants(psdBytes([plain, named, otherNamed]), limit)).rejects.toMatchObject({
+      kind: 'too_large',
+      body: { reason: 'psd_render_limit', required_renders: 6, max_renders: 5 },
+    })
+  })
+
+  it('既定の PSD 描画上限で上から10枚目の無名の修正レイヤーまで検査できる', async () => {
+    const top = Array.from({ length: 9 }, (_, i) => layer(`仕上げ ${i + 1}`, [0, 0, 0, 0]))
+    const data = psdBytes([layer('背景', RED), layer('レイヤー 3', WHITE), ...top], WHITE)
+    const cfg = loadConfig({}, '.')
+    const plans = await planVariants(data, cfg)
+    const removed = find(plans, '「レイヤー 3」を外す')
+    expect(await centerPixel(await removed.render())).toEqual([255, 0, 0])
   })
 
   it('モザイク名のレイヤーが無ければ「モザイク名を非表示」の変種を作らない', async () => {
@@ -186,7 +212,7 @@ describe('renderVariants: ラスター', () => {
     expect(await centerPixel(vs[0]!.image)).toEqual([255, 0, 0])
   })
 
-  it('アニメ GIF はページごとに 1 件（赤・緑・青が別々に出る）、上限も同じく効く', async () => {
+  it('アニメ GIF は全フレームを描画し、フレーム数超過は拒否する', async () => {
     const gif = await sharp([await solidPng('#f00'), await solidPng('#0f0'), await solidPng('#00f')], {
       join: { animated: true },
     })
@@ -195,10 +221,9 @@ describe('renderVariants: ラスター', () => {
     const all = await renderVariants(new Uint8Array(gif), opts())
     expect(all).toHaveLength(3)
     expect((await centers(all)).map(dominant)).toEqual([0, 1, 2])
-    const log = vi.fn()
-    const capped = await renderVariants(new Uint8Array(gif), opts({ maxRenders: 2, log }))
-    expect(capped).toHaveLength(2)
-    expect(log).toHaveBeenCalledWith(expect.stringMatching(/省略 1 件/))
+    expect(all.map((v) => v.description)).toEqual(['フレーム 1/3', 'フレーム 2/3', 'フレーム 3/3'])
+    await expect(renderVariants(gif, opts({ maxRenders: 1 }))).resolves.toHaveLength(3)
+    await expect(renderVariants(gif, opts({ maxFrames: 2 }))).rejects.toMatchObject({ kind: 'too_large' })
   })
 
   it('複数ページ TIFF はページごとに 1 件（ページごとに色が違う）、上限も同じく効く', async () => {
@@ -208,10 +233,8 @@ describe('renderVariants: ラスター', () => {
     const all = await renderVariants(new Uint8Array(tiff), opts())
     expect(all).toHaveLength(2)
     expect((await centers(all)).map(dominant)).toEqual([0, 1])
-    const log = vi.fn()
-    const capped = await renderVariants(new Uint8Array(tiff), opts({ maxRenders: 1, log }))
-    expect(capped).toHaveLength(1)
-    expect(log).toHaveBeenCalledWith(expect.stringMatching(/省略 1 件/))
+    await expect(renderVariants(tiff, opts({ maxAnimSeconds: 0.001 }))).resolves.toHaveLength(2)
+    await expect(renderVariants(tiff, opts({ maxFrames: 1 }))).rejects.toMatchObject({ kind: 'too_large' })
   })
 
   it('EXIF の向き（6 = 90 度回転）を反映する: 40x20 → 20x40', async () => {

@@ -6,7 +6,8 @@
 // ponytail: 展開の上限はレイヤーの確保量の合計（maxPixels × 4 バイト）。多数の中サイズレイヤーの正当な PSD も弾く。
 import { initializeCanvas, readPsd, type Layer, type PixelData, type Psd } from 'ag-psd'
 import sharp from 'sharp'
-import { CheckError } from './types.ts'
+import { sniff } from './images.ts'
+import { CheckError, PsdRenderLimitError } from './types.ts'
 
 // ag-psd は既定で canvas パッケージを要求する。ピクセルは素の配列で扱うので、canvas は使わない。
 initializeCanvas(
@@ -18,20 +19,14 @@ initializeCanvas(
 
 export interface Variant {
   description: string
-  image: Uint8Array
+  render: () => Promise<Uint8Array>
 }
-
 export interface RenderOptions {
   maxRenders: number
+  maxFrames: number
+  maxAnimSeconds: number
   layerPattern: string
   maxPixels: number
-  log?: (line: string) => void
-}
-
-/** 描画の予定（まだ描かない）。上限で切ってから描くため、遅延させる。 */
-interface Plan {
-  description: string
-  render: () => Promise<Uint8Array>
 }
 
 /** PSD のノード（グループ・レイヤー）。chain は自分と祖先の id。 */
@@ -43,21 +38,17 @@ interface Item {
   leaf: boolean
 }
 
-const PSD_MAGIC = [0x38, 0x42, 0x50, 0x53] // '8BPS'
-const RASTER_MAGIC = [
-  [0x89, 0x50, 0x4e, 0x47], // PNG
-  [0xff, 0xd8, 0xff], // JPEG
-  [0x47, 0x49, 0x46, 0x38], // GIF
-  [0x49, 0x49, 0x2a, 0x00], // TIFF (little)
-  [0x4d, 0x4d, 0x00, 0x2a], // TIFF (big)
-]
-
-const startsWith = (d: Uint8Array, sig: number[], at = 0): boolean => sig.every((b, i) => d[at + i] === b)
-
-/** 先頭バイトで判定する。SVG・HEIC・BMP などのラスター以外は未対応。 */
-const isRaster = (d: Uint8Array): boolean =>
-  RASTER_MAGIC.some((sig) => startsWith(d, sig)) ||
-  (startsWith(d, [0x52, 0x49, 0x46, 0x46]) && startsWith(d, [0x57, 0x45, 0x42, 0x50], 8)) // RIFF....WEBP
+/** sharp は APNG の各フレームを取得できないため、acTL があれば拒否する。 */
+function isApng(data: Uint8Array): boolean {
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
+  for (let offset = 8; offset + 12 <= view.byteLength;) {
+    const type = view.getUint32(offset + 4)
+    if (type === 0x6163544c) return true // acTL
+    if (type === 0x49444154) break // IDAT
+    offset += 12 + view.getUint32(offset)
+  }
+  return false
+}
 
 const flatten = (layers: Layer[], chain: number[] = [], out: Item[] = []): Item[] => {
   for (const layer of layers) {
@@ -135,7 +126,7 @@ async function decode<T>(fn: () => T | Promise<T>): Promise<T> {
   }
 }
 
-async function psdPlans(data: Uint8Array, opts: RenderOptions, re: RegExp): Promise<Plan[]> {
+async function psdPlans(data: Uint8Array, opts: RenderOptions, re: RegExp): Promise<Variant[]> {
   checkPsdHeader(data, opts.maxPixels)
   // レイヤーの確保量の合計を maxPixels 画素分（4 バイト/画素）に抑える。超えると ag-psd が確保前に例外を投げる。
   const psd: Psd = await decode(() =>
@@ -161,7 +152,7 @@ async function psdPlans(data: Uint8Array, opts: RenderOptions, re: RegExp): Prom
   // 自分または祖先の名前がパターンに合う可視レイヤー（グループ名も数える）
   const named = (it: Item): boolean => it.chain.some((id) => re.test((items[id] as Item).name))
   const matched = leaves.filter(named)
-  const plans: Plan[] = [
+  const plans: Variant[] = [
     {
       description: '見えているとおり',
       render: () =>
@@ -190,22 +181,33 @@ async function psdPlans(data: Uint8Array, opts: RenderOptions, re: RegExp): Prom
   return plans
 }
 
-async function rasterPlans(data: Uint8Array, opts: RenderOptions): Promise<Plan[]> {
-  if (!isRaster(data)) throw new CheckError('unsupported', '未対応の画像形式です')
-  const meta = await decode(() => sharp(data, { pages: -1, limitInputPixels: opts.maxPixels }).metadata())
+async function rasterPlans(data: Uint8Array, opts: RenderOptions, format: ReturnType<typeof sniff>): Promise<Variant[]> {
+  if (format === 'unsupported' || (format === 'png' && isApng(data))) {
+    throw new CheckError('unsupported', '未対応の画像形式です')
+  }
+  const meta = await decode(() => sharp(data, { limitInputPixels: opts.maxPixels }).metadata())
   const pages = meta.pages ?? 1
   const h = meta.pageHeight ?? meta.height ?? 0
   if ((meta.width ?? 0) * h > opts.maxPixels) throw new CheckError('bad_input', '画素数が上限を超えています')
+  if (pages > opts.maxFrames) throw new CheckError('too_large', 'フレーム数が上限を超えています')
+  const timed = pages > 1 && (format === 'gif' || format === 'webp')
+  if (timed) {
+    const delay = meta.delay ?? []
+    const duration = Array.from({ length: pages }, (_, i) => delay[i] ?? 0)
+      .reduce((sum, ms) => sum + (ms > 0 ? ms : 10), 0)
+    if (duration > opts.maxAnimSeconds * 1000) throw new CheckError('too_large', '再生時間が上限を超えています')
+  }
   return Array.from({ length: pages }, (_, i) => ({
-    description: pages > 1 ? `ページ ${i + 1}/${pages}` : 'ラスター',
+    description: timed ? `フレーム ${i + 1}/${pages}` : pages > 1 ? `ページ ${i + 1}/${pages}` : 'ラスター',
     // rotate() は EXIF の向きを画素に反映し、向きタグを落とす（後段の正規化で二重に回さないため）
     render: () => decode(() => sharp(data, { page: i, limitInputPixels: opts.maxPixels }).rotate().png().toBuffer()),
   }))
 }
 
-/** 描画変種を最大 maxRenders 件返す。失敗時は CheckError（数値を返さない）。 */
+/** 上限を確認し、各描画を必要になったときに生成する。 */
 export async function renderVariants(data: Uint8Array, opts: RenderOptions): Promise<Variant[]> {
-  const max = Math.max(1, opts.maxRenders)
+  const format = sniff(data)
+  if (format !== 'psd') return rasterPlans(data, opts, format)
   // 層名パターンの誤りは設定の問題なので、入力の問題（bad_input）にはしない
   let re: RegExp
   try {
@@ -214,15 +216,11 @@ export async function renderVariants(data: Uint8Array, opts: RenderOptions): Pro
     throw new CheckError('internal', '層名パターンが不正です')
   }
   try {
-    const plans = isPsd(data) ? await psdPlans(data, opts, re) : await rasterPlans(data, opts)
-    if (plans.length > max) opts.log?.(`描画を切り捨て: 上限 ${max} 件、省略 ${plans.length - max} 件`)
-    const out: Variant[] = []
-    for (const p of plans.slice(0, max)) out.push({ description: p.description, image: await p.render() })
-    return out
+    const plans = await psdPlans(data, opts, re)
+    if (plans.length > opts.maxRenders) throw new PsdRenderLimitError(plans.length, opts.maxRenders)
+    return plans
   } catch (e) {
     if (e instanceof CheckError) throw e
     throw new CheckError('internal', 'レイヤー付き画像の描画で内部エラーが起きました')
   }
 }
-
-const isPsd = (d: Uint8Array): boolean => startsWith(d, PSD_MAGIC)

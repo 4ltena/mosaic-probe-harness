@@ -116,16 +116,18 @@ describe('mcp', () => {
 const DETAIL: Detail = {
   pOk: 0.12,
   judgment: 'forgot',
-  confidence: 0.62,
+  confidence: 0.82,
   render: 'モザイク名のレイヤーを非表示',
-  classes: { none: 0.01, ok: 0.1, forgot: 0.62, insufficient: 0.2, nori: 0.07 },
+  classes: { ok: 0.11, forgot: 0.82, nori: 0.07 },
+  perModel: { default: { none: 0.01, processed: 0.1, forgot: 0.82, nori: 0.07 } },
 }
 const DETAIL_BODY = {
   p_ok: 0.12,
   judgment: 'forgot',
-  confidence: 0.62,
+  confidence: 0.82,
   render: 'モザイク名のレイヤーを非表示',
-  classes: { none: 0.01, ok: 0.1, forgot: 0.62, insufficient: 0.2, nori: 0.07 },
+  classes: { ok: 0.11, forgot: 0.82, nori: 0.07 },
+  per_model: DETAIL.perModel,
 }
 
 describe('mcp detail', () => {
@@ -216,7 +218,7 @@ describe('mcp fields（返す項目の選択）', () => {
 
   it('fields: ["confidence"] は p_ok と confidence だけ', async () => {
     const body = JSON.parse(textOf(await call({ fields: ['confidence'] })))
-    expect(body).toEqual({ p_ok: 0.12, confidence: 0.62 })
+    expect(body).toEqual({ p_ok: 0.12, confidence: 0.82 })
   })
 
   it('fields: ["confidence","judgment"] は両方。出力の順は固定', async () => {
@@ -224,13 +226,14 @@ describe('mcp fields（返す項目の選択）', () => {
     expect(Object.keys(body)).toEqual(['p_ok', 'judgment', 'confidence'])
   })
 
-  it('detail: true は 4 項目すべて、fields を併記したら fields が優先', async () => {
+  it('detail: true は per_model も含む、fields を併記したら fields が優先', async () => {
     expect(Object.keys(JSON.parse(textOf(await call({ detail: true }))))).toEqual([
       'p_ok',
       'judgment',
       'confidence',
       'render',
       'classes',
+      'per_model',
     ])
     expect(JSON.parse(textOf(await call({ detail: true, fields: ['judgment'] })))).toEqual({
       p_ok: 0.12,

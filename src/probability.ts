@@ -1,6 +1,6 @@
-// 確率の計算: モデルの確率（none / ok / ng。ng は問題の 3 種類の合計）から p_ok を作り、較正・信頼度・閾値を扱う。
+// モデルの 4 語の確率を統合し、判定と p_ok を計算する。較正・閾値も扱う。
 import { existsSync, readFileSync } from 'node:fs'
-import type { ClassProbs, Label } from './types.ts'
+import type { Classes, Judgment, Label, Probs4 } from './types.ts'
 
 // 0 や 1 のまま logit に入れると無限大になるので、わずかに内側に寄せる
 const EPS = 1e-12
@@ -20,6 +20,7 @@ export class Calibrator {
   }
 
   apply(q: number): number {
+    if (this.a === 1 && this.b === 0) return q
     return sigmoid(this.a * logit(clampProb(q)) + this.b)
   }
 
@@ -65,32 +66,22 @@ export class Calibrator {
     return new Calibrator(a, b)
   }
 
-  /** 同期読み込み。ファイルが無ければ恒等。 */
+  /** 同期読み込み。ファイルが無い場合と、旧式用の較正は恒等。 */
   static load(path: string): Calibrator {
     if (!existsSync(path)) return new Calibrator()
     const v: unknown = JSON.parse(readFileSync(path, 'utf8'))
-    const { a, b } = (v ?? {}) as { a?: unknown; b?: unknown }
+    const { version, a, b } = (v ?? {}) as { version?: unknown; a?: unknown; b?: unknown }
+    if (version === undefined && typeof a === 'number' && typeof b === 'number') return new Calibrator()
+    if (version !== 'v1.1') throw new Error('calibration のバージョンが不正です')
     if (typeof a !== 'number' || typeof b !== 'number' || !Number.isFinite(a) || !Number.isFinite(b)) {
       throw new Error('calibration の形式が不正です')
     }
     return new Calibrator(a, b)
   }
 
-  toJSON(): { a: number; b: number } {
-    return { a: this.a, b: this.b }
+  toJSON(): { version: 'v1.1'; a: number; b: number } {
+    return { version: 'v1.1', a: this.a, b: this.b }
   }
-}
-
-/** p_ok = 「処理不要または処理済み」の確率。低いほど危険。 */
-export function pOk(probs: ClassProbs, cal: Calibrator): number {
-  const total = probs.ok + probs.ng
-  // 判定が一つも出ていないときは、判断材料が無いのでそのまま 1 を返す（例外にしない）
-  if (total <= 0) return 1
-  const q = probs.ng / total
-  const pMosaicked = 1 - cal.apply(q)
-  const pHasTarget = 1 - probs.none
-  const pNg = pHasTarget * (1 - pMosaicked)
-  return clampUnit(1 - pNg)
 }
 
 /**
@@ -145,4 +136,60 @@ export function chooseThresholds(ngPNg: number[], okPNg: number[]): [number, num
   const tNg = clampUnit(floorTenth(ngMin - 0.1))
   const tOk = clampUnit(Math.min(floorTenth((okMax + ngMin) / 2), tNg - 0.1))
   return [tOk, tNg]
+}
+
+/** 重みつき平均（合計 1 に正規化）。モデル間の統合に使う。 */
+export function aggregate(items: { probs: Probs4; weight: number }[]): Probs4 {
+  if (items.length === 0) throw new Error('統合する判定がありません')
+  const scale = items.reduce((max, item) => Math.max(max, item.weight), 0)
+  const acc = { none: 0, processed: 0, forgot: 0, nori: 0 }
+  for (const { probs, weight } of items) {
+    if (!Number.isFinite(weight) || weight <= 0) throw new Error('重みは正の有限値である必要があります')
+    for (const k of KEYS4) {
+      if (!Number.isFinite(probs[k]) || probs[k] < 0 || probs[k] > 1) throw new Error('確率が不正です')
+      acc[k] += (weight / scale) * probs[k]
+    }
+  }
+  const total = KEYS4.reduce((s, k) => s + acc[k], 0)
+  if (total <= 0) throw new Error('確率の合計が 0 です')
+  return {
+    none: acc.none / total,
+    processed: acc.processed / total,
+    forgot: acc.forgot / total,
+    nori: acc.nori / total,
+  }
+}
+
+const KEYS4 = ['none', 'processed', 'forgot', 'nori'] as const
+
+/**
+ * 統合後の 4 語の確率から判定を作る（仕様 §1）。
+ * okMass = none + processed、ngMass = max(forgot, nori)、ngKind は多い方の NG 種。
+ * q は較正前の NG 確率。較正を指定しなければ恒等。
+ */
+export function judge4(p: Probs4, cal?: Calibrator): {
+  q: number
+  pOk: number
+  judgment: Judgment
+  confidence: number
+  classes: Classes
+  okMass: number
+  ngMass: number
+} {
+  const okMass = clampUnit(p.none + p.processed)
+  const ngMass = Math.max(p.forgot, p.nori)
+  const total = okMass + ngMass
+  if (!(total > 0)) throw new Error('確率の合計が 0 です')
+  const q = ngMass / total
+  const ngKind: 'forgot' | 'nori' = p.forgot >= p.nori ? 'forgot' : 'nori'
+  const judgment: Judgment = okMass >= ngMass ? 'ok' : ngKind
+  return {
+    q,
+    pOk: clampUnit(1 - (cal?.apply(q) ?? q)),
+    judgment,
+    confidence: judgment === 'ok' ? okMass : ngMass,
+    classes: { ok: okMass, forgot: p.forgot, nori: p.nori },
+    okMass,
+    ngMass,
+  }
 }

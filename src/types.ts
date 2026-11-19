@@ -1,49 +1,54 @@
 // 全タスク共通の型。ここを変更するときは計画書の「共有契約」も直す。
 
-/** 問題の 3 種類。forgot=かけ忘れ（対象が隠されていない）/ insufficient=不十分（モザイクはあるが範囲・粗さ・濃さが足りない）/ nori=ノリ（モザイクではなく黒い帯・枠で隠している）。 */
-export interface Kinds {
+/**
+ * 判定モデルの 4 語の確率（合計 1）。語は none=対象なし / processed=処理済み / forgot=かけ忘れ・処理不足 / nori=黒い帯・枠で隠している。
+ */
+export interface Probs4 {
+  none: number
+  processed: number
   forgot: number
-  insufficient: number
   nori: number
 }
 
-/**
- * 判定の確率。合計は 1。none=対象なし / ok=処理済み / ng=問題あり。
- * `kinds` があるとき、ng は kinds の 3 つの合計に等しい（NORI_AS_OK=1 のときは nori を ok に移した後の値）。
- */
-export interface ClassProbs {
-  none: number
-  ok: number
-  ng: number
-  /** 問題の種類の内訳（モデルが 5 択で答えたときだけ。nori の移動前の生の値）。 */
-  kinds?: Kinds
+/** 判定器（1 モデル分）。PNG を受け、4 語の確率を返す。失敗は CheckError('vlm')。 */
+export interface Judge {
+  name: string
+  weight: number
+  judge(png: Uint8Array, signal?: AbortSignal): Promise<Probs4>
 }
 
-/** 総合判断。5 択（none=対象なし / ok=処理済み / forgot=かけ忘れ / insufficient=不十分 / nori=ノリ）のうち、最も確率が高い答え。 */
-export type Judgment = 'none' | 'ok' | 'forgot' | 'insufficient' | 'nori'
+export interface Classes {
+  ok: number
+  forgot: number
+  nori: number
+}
+
+/** 総合判断。4 語の判定のうち、統合後に選ばれた答え（ok = 対象なし・処理済みのどちらか）。 */
+export type Judgment = 'ok' | 'forgot' | 'nori'
 
 /** 詳細応答で選べる項目（p_ok は常に含む）。`?fields=judgment,confidence`（MCP は fields 引数）で絞る。 */
 export const DETAIL_FIELDS = ['judgment', 'confidence', 'render', 'classes'] as const
 export type DetailField = (typeof DETAIL_FIELDS)[number]
 
-/** 詳細応答 `?detail=1`（MCP は detail: true）の中身。p_ok は較正済み、classes は最悪の描画の生の確率。 */
+/** 詳細応答 `?detail=1`（MCP は detail: true）の中身。p_ok は較正済み、classes は最悪の描画の統合後の値。 */
 export interface Detail {
   pOk: number
-  /** 総合判断（最悪の描画の classes のうち最も確率が高い答え。同率なら重い順 forgot > insufficient > nori > ok > none）。 */
+  /** 総合判断（統合後の okMass と ngMass で決まる）。 */
   judgment: Judgment
-  /** 総合判断の確率（classes[judgment]。較正前の生の値）。この判断がどれくらいの確からしさで選ばれたか。 */
+  /** 総合判断の確率（ok なら okMass、NG なら ngMass）。 */
   confidence: number
   /** 最悪（p_ok が最小）の描画の説明。例: 「見えているとおり」「モザイク名のレイヤーを非表示」。 */
   render: string
-  classes: { none: number; ok: number } & Kinds
+  classes: Classes
+  perModel: Record<string, Probs4>
 }
 
 /** 評価専用の 3 段階ラベル（サーバーは使わない）。 */
 export type Label = 'pass' | 'hold' | 'stop'
 
-export type CheckErrorKind = 'bad_input' | 'unsupported' | 'vlm' | 'busy' | 'internal'
+export type CheckErrorKind = 'bad_input' | 'unsupported' | 'too_large' | 'vlm' | 'busy' | 'internal'
 
-/** 判定の失敗。数値を返せない状態を表す。HTTP では 400/415/502/503/500 に対応する。 */
+/** 判定の失敗。数値を返せない状態を表す。HTTP では 400/415/413/502/503/500 に対応する。 */
 export class CheckError extends Error {
   readonly kind: CheckErrorKind
   constructor(kind: CheckErrorKind, message: string) {
@@ -53,9 +58,31 @@ export class CheckError extends Error {
   }
 }
 
+export class PsdRenderLimitError extends CheckError {
+  readonly body: {
+    error: 'too_large'
+    reason: 'psd_render_limit'
+    required_renders: number
+    max_renders: number
+    message: string
+  }
+
+  constructor(requiredRenders: number, maxRenders: number) {
+    super('too_large', `PSD の検査には${requiredRenders}件の描画が必要ですが、上限は${maxRenders}件です`)
+    this.body = {
+      error: 'too_large',
+      reason: 'psd_render_limit',
+      required_renders: requiredRenders,
+      max_renders: maxRenders,
+      message: this.message,
+    }
+  }
+}
+
 export const HTTP_STATUS_OF_KIND: Record<CheckErrorKind, number> = {
   bad_input: 400,
   unsupported: 415,
+  too_large: 413,
   vlm: 502,
   busy: 503,
   internal: 500,

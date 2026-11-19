@@ -4,7 +4,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { z } from 'zod'
 import type { Config } from './config.ts'
 import { detailJson } from './http.ts'
-import { CheckError, DETAIL_FIELDS, type Detail } from './types.ts'
+import { CheckError, DETAIL_FIELDS, type Detail, PsdRenderLimitError } from './types.ts'
 
 const DATA_PREFIX = /^data:[^;,]*;base64,/
 // ponytail: 空白の除去と文字種の検査だけ。MIME 種別は見ない（画像の正当性は normalize が判定する）
@@ -42,7 +42,7 @@ export function createMcpHandler(
     res.on('close', () => {
       if (!res.writableFinished) ac.abort()
     })
-    const server = new McpServer({ name: 'mosaic-probe-harness', version: '0.1.0' })
+    const server = new McpServer({ name: 'mosaic-probe-harness', version: '1.1.0' })
     server.registerTool(
       'check_mosaic',
       {
@@ -71,7 +71,11 @@ export function createMcpHandler(
         } catch (e) {
           // 想定外の例外は内容を出さず internal に包む
           const err = e instanceof CheckError ? e : new CheckError('internal', '内部エラー')
-          return { isError: true, content: [{ type: 'text', text: `error: ${err.kind}: ${err.message}` }] }
+          return {
+            isError: true,
+            content: [{ type: 'text', text: `error: ${err.kind}: ${err.message}` }],
+            ...(err instanceof PsdRenderLimitError ? { structuredContent: err.body } : {}),
+          }
         }
       },
     )

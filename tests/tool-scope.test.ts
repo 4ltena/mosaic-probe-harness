@@ -9,10 +9,9 @@ import { createFauxCore, fauxAssistantMessage, getCurrentTools, type TranscriptM
 import sharp from 'sharp'
 import { afterEach, describe, expect, it } from 'vitest'
 import { defaultConfig } from '../src/config.ts'
-import { buildJudge } from '../src/vlm.ts'
+import { buildJudges } from '../src/vlm.ts'
 import { createMcpHandler } from '../src/mcp.ts'
 import { createRecheck, RECHECK_TOOL_NAMES } from '../src/recheck.ts'
-import type { ClassProbs } from '../src/types.ts'
 
 const ROOT = resolve('.')
 // 許可する Pi パッケージ（pi-ai と pi-agent-core だけ）
@@ -38,14 +37,12 @@ describe('ツールの範囲（tool-scope）', () => {
       seen.push(context as { messages: TranscriptMessages })
       return faux.streamSimple(model as never, context as never, opts as never)
     }
-    const judge = async (): Promise<ClassProbs> => ({ none: 0, ok: 0.5, ng: 0.5 })
     const recheck = createRecheck(defaultConfig({ recheck: true }), {
-      judge,
-      pOk: (p) => p.ok,
+      score: async () => 0.5,
       chat: { streamFn, model: faux.getModel() },
     })
-    const jpeg = await sharp({ create: { width: 64, height: 64, channels: 3, background: '#808080' } }).jpeg().toBuffer()
-    await recheck(jpeg, 0.8)
+    const png = await sharp({ create: { width: 64, height: 64, channels: 3, background: '#808080' } }).png().toBuffer()
+    await recheck(png, 0.8)
     expect(seen.length).toBeGreaterThan(0)
     const names = getCurrentTools(seen[0]?.messages ?? []).map((t) => t.name)
     expect(names).toEqual(['crop'])
@@ -88,22 +85,28 @@ describe('ツールの範囲（tool-scope）', () => {
     const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
       const chunks: Buffer[] = []
       for await (const c of req) chunks.push(c as Buffer)
-      bodies.push(JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>)
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>
+      if (req.url === '/tokenize') {
+        const piece = String(body.content)
+        res.end(JSON.stringify({ tokens: [{ id: ['none', 'processed', 'forgot', 'nori'].indexOf(piece), piece }] }))
+        return
+      }
+      bodies.push(body)
       res.setHeader('content-type', 'application/json')
       res.end(
         JSON.stringify({
           choices: [
             {
-              message: { role: 'assistant', content: 'B' },
+              message: { role: 'assistant', content: 'processed' },
               logprobs: {
                 content: [
                   {
-                    token: 'B',
+                    token: 'processed',
                     logprob: Math.log(0.9),
                     top_logprobs: [
-                      { token: 'A', logprob: Math.log(0.05) },
-                      { token: 'B', logprob: Math.log(0.9) },
-                      { token: 'C', logprob: Math.log(0.05) },
+                      { token: 'none', logprob: Math.log(0.05) },
+                      { token: 'processed', logprob: Math.log(0.9) },
+                      { token: 'forgot', logprob: Math.log(0.05) },
                     ],
                   },
                 ],
@@ -116,11 +119,11 @@ describe('ツールの範囲（tool-scope）', () => {
     servers.push(server)
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()))
     const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
-    const { judge } = buildJudge(
+    const judges = buildJudges(
       defaultConfig({ vlmBaseUrls: [url], vlmModel: 'test-model', rulesPath: join(ROOT, 'rules.md'), vlmTimeoutMs: 5000 }),
     )
-    const jpeg = await sharp({ create: { width: 8, height: 8, channels: 3, background: '#ffffff' } }).jpeg().toBuffer()
-    await judge(jpeg)
+    const png = await sharp({ create: { width: 8, height: 8, channels: 3, background: '#ffffff' } }).png().toBuffer()
+    await judges[0]!.judge(png)
     expect(bodies.length).toBeGreaterThan(0)
     for (const b of bodies) {
       expect(b).not.toHaveProperty('tools')
