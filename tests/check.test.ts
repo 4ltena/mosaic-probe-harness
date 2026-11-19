@@ -146,20 +146,29 @@ describe('前段の検出（DETECT=1）', () => {
     expect((await checkDetail(SRC, on, { ...d, crops: undefined })).render).toBe('v0')
   })
 
-  it('既定オフ: check.ts は crops.ts も detect.ts も import せず、src と eval に detect.ts の静的な import がない', () => {
-    const check = readFileSync('src/check.ts', 'utf8')
-    expect(check).not.toMatch(/from\s+['"][^'"]*\/(crops|detect)\.ts['"]/u)
+  it('既定オフ: check.ts は crops.ts も detect.ts も参照せず、src と eval に crops.ts・detect.ts の静的な import がない', () => {
+    // 動的な import も含め、check.ts にはどちらのパスも書かない
+    expect(readFileSync('src/check.ts', 'utf8')).not.toMatch(/['"][^'"]*\/(crops|detect)\.ts['"]/u)
+    // import・export の … from と、副作用だけの import。import type と export type は消えるので除く。
+    // import { type X } は消えずに読み込むので違反として扱う。行の先頭にない await import(...) は対象外
+    const STATIC = /^(?:import|export)\s+(?!type\s)(?:[^'"]*?\sfrom\s+)?['"][^'"]*\/(?:crops|detect)\.ts['"]/gmu
     const offenders: string[] = []
     for (const dir of ['src', 'eval']) {
-      for (const name of readdirSync(dir).filter((n) => n.endsWith('.ts') && n !== 'detect.ts')) {
-        const text = readFileSync(join(dir, name), 'utf8')
-        // import type は消える。import { type X } は消えずに読み込むので違反として扱う
-        for (const m of text.matchAll(/^import\s+(?!type\s)[^'"]*?from\s+['"][^'"]*\/detect\.ts['"]/gmu)) {
-          offenders.push(`${dir}/${name}: ${m[0]}`)
-        }
+      for (const name of readdirSync(dir).filter((n) => n.endsWith('.ts') && n !== 'detect.ts' && n !== 'crops.ts')) {
+        for (const m of readFileSync(join(dir, name), 'utf8').matchAll(STATIC)) offenders.push(`${dir}/${name}: ${m[0]}`)
       }
     }
     expect(offenders).toEqual([])
+    // 検査そのものの確かめ
+    const caught = (s: string) => [...s.matchAll(STATIC)].length
+    for (const s of ["import { buildCrops } from './crops.ts'", "import './detect.ts'", "export * from '../src/crops.ts'",
+      "export { createDetector } from './detect.ts'", "import { type Box } from './detect.ts'", "import * as d from './detect.ts'"]) {
+      expect(caught(s), s).toBe(1)
+    }
+    for (const s of ["import type { Box } from './detect.ts'", "export type { Box } from './detect.ts'",
+      "  const m = await import('./crops.ts')", "import sharp from 'sharp'\nimport type { Detector } from './detect.ts'"]) {
+      expect(caught(s), s).toBe(0)
+    }
   })
 
   it('NG の反映: 全体が ok でも、切り出しが NG なら NG', async () => {

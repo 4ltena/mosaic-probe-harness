@@ -9,7 +9,6 @@ import { createGate } from './gate.ts'
 import { normalize } from './images.ts'
 import { createHttpServer } from './http.ts'
 import { renderVariants } from './layers.ts'
-import { buildCrops } from './crops.ts'
 import { createMcpHandler } from './mcp.ts'
 import { Calibrator, assertIncreasingCalibration } from './probability.ts'
 import { loadEnvFile } from './env-file.ts'
@@ -102,10 +101,12 @@ export function buildServer(cfg: Config, overrides: ServerOverrides = {}): Serve
 
 async function main(): Promise<void> {
   const cfg = loadConfig(loadEnvFile())
-  // DETECT=0 では detect.ts も ONNX ランタイムも読み込まない
-  const crops = cfg.detect
-    ? buildCrops(cfg, await (await import('./detect.ts')).createDetector(cfg, process.cwd()))
-    : undefined
+  // DETECT=0 では crops.ts も detect.ts も ONNX ランタイムも読み込まない
+  let crops: CheckDeps['crops']
+  if (cfg.detect) {
+    const [{ createDetector }, { buildCrops }] = await Promise.all([import('./detect.ts'), import('./crops.ts')])
+    crops = buildCrops(cfg, await createDetector(cfg, process.cwd()))
+  }
   const server = buildServer(cfg, { crops })
   await new Promise<void>((ok, ng) => {
     server.once('error', ng)

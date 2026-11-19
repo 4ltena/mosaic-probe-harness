@@ -6,8 +6,7 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { loadConfig } from '../src/config.ts'
 import { loadEnvFile } from '../src/env-file.ts'
-import { checkResult } from '../src/check.ts'
-import { buildCrops } from '../src/crops.ts'
+import { checkResult, type CheckDeps } from '../src/check.ts'
 import { chooseThresholds, reliability } from '../src/probability.ts'
 import { EVAL_KINDS, buildEvalDeps, fitCalibration, isProblem, kindConfusion, parseLabels, summarize } from './lib.ts'
 
@@ -37,10 +36,12 @@ async function main(): Promise<void> {
   }
 
   const cfg = loadConfig(loadEnvFile())
-  // サーバーと同じ検出器と切り出し。DETECT=0 では detect.ts も ONNX ランタイムも読み込まない
-  const crops = cfg.detect
-    ? buildCrops(cfg, await (await import('../src/detect.ts')).createDetector(cfg, process.cwd()))
-    : undefined
+  // サーバーと同じ検出器と切り出し。DETECT=0 では crops.ts も detect.ts も ONNX ランタイムも読み込まない
+  let crops: CheckDeps['crops']
+  if (cfg.detect) {
+    const [{ createDetector }, { buildCrops }] = await Promise.all([import('../src/detect.ts'), import('../src/crops.ts')])
+    crops = buildCrops(cfg, await createDetector(cfg, process.cwd()))
+  }
   const deps = buildEvalDeps(cfg, crops)
   const labels = parseLabels(readFileSync(labelsPath, 'utf8'))
 
