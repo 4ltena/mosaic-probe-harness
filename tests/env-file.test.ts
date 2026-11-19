@@ -102,8 +102,10 @@ describe('env-file: ファイルの入出力', () => {
 
   it('process.env は書き換えない', () => {
     write('ENV_FILE_TEST_ONLY_KEY=1\n')
-    loadEnvFile(dir)
+    const before = JSON.stringify(process.env)
+    expect(loadEnvFile(dir, { PATH: 'x' })).toEqual({ ENV_FILE_TEST_ONLY_KEY: '1', PATH: 'x' })
     expect(process.env.ENV_FILE_TEST_ONLY_KEY).toBeUndefined()
+    expect(JSON.stringify(process.env)).toBe(before)
   })
 
   it('BOM・NUL・CP932 のファイルは止まり、パスも値も出さない', () => {
@@ -131,6 +133,11 @@ describe('env-file: ファイルの入出力', () => {
     expect(() => loadEnvFile(dir, {})).toThrow(/DETECT_X/)
   })
 
+  it('小文字の detect=1（末尾の _ なし）も、変数名を示して止まる', () => {
+    write('detect=1\n')
+    expect(() => loadEnvFile(dir, {})).toThrow(/detect/)
+  })
+
   it('読み込みに失敗（.env がディレクトリ）したら、パスを出さずに止まる', () => {
     mkdirSync(join(dir, '.env'))
     let message = ''
@@ -155,6 +162,11 @@ describe('.env.example', () => {
 
   it('そのまま読み込むと、既定の設定と同じになる（未知の項目もない）', () => {
     expect(loadConfig(mergeEnv(example, {}, false), '.')).toEqual(loadConfig({}, '.'))
+  })
+
+  it('DETECT=1 にしても、そのまま読み込んだ値は既定値と同じになる', () => {
+    const on = { DETECT: '1', DETECT_ANIME_MODEL: 'm' }
+    expect(loadConfig({ ...example, ...on }, '.')).toEqual(loadConfig(on, '.'))
   })
 
   it('既存の項目と新しい項目のすべてが載っている（コメントアウトも含む）', () => {

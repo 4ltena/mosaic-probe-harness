@@ -161,7 +161,7 @@ const KNOWN_DETECT_KEYS = new Set([
  */
 export function assertKnownDetectKeys(keys: Iterable<string>): void {
   for (const k of keys) {
-    if (/^(DETECT|STYLE)_/iu.test(k) && !KNOWN_DETECT_KEYS.has(k)) {
+    if (/^(?:DETECT(?:_|$)|STYLE_)/iu.test(k) && !KNOWN_DETECT_KEYS.has(k)) {
       throw new Error(`未知の設定項目があります: ${k}（綴りを確かめてください）`)
     }
   }

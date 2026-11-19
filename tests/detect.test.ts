@@ -465,6 +465,17 @@ describe('Detector', () => {
     await expect(det(png)).rejects.toMatchObject({ kind: 'internal' })
   })
 
+  it('正方形でない画像でも、モデル座標の箱が元の座標に戻る（stretch と letterbox）', async () => {
+    const wide = await solid(320, 160, [10, 20, 30])
+    // stretch: gx = 2, gy = 4
+    const s = await createDetector(one(), dir, async () => fakeOrt([], { anime: () => yolo(3, [{ b: [100, 100, 200, 200], c: 1, s: 0.9 }]) }))
+    expect((await s(wide)).map(xyxy)).toEqual([[50, 25, 100, 50]])
+    // letterbox: r = 2、上に 160 の余白
+    const l = await createDetector(one({ detectAnime: animeSpec({ resize: 'letterbox' }) }), dir, async () =>
+      fakeOrt([], { anime: () => yolo(3, [{ b: [100, 260, 200, 360], c: 1, s: 0.9 }]) }))
+    expect((await l(wide)).map(xyxy)).toEqual([[50, 50, 100, 100]])
+  })
+
   it('中断されていれば推論しない', async () => {
     const log: string[] = []
     const det = await createDetector(one(), dir, async () => fakeOrt(log, { anime: () => yolo(3, []) }))

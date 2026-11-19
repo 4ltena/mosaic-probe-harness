@@ -60,6 +60,15 @@ describe('buildCrops', () => {
     expect(data.every((v, i) => v === (i % 3 === 0 ? 255 : 0))).toBe(true)
   })
 
+  it('寸法を読めない画像（幅 0）は、切り出さずに internal で止まる', async () => {
+    const spy = vi.spyOn(Object.getPrototypeOf(sharp()), 'metadata').mockResolvedValueOnce({ width: 0, height: 50 })
+    try {
+      await expect(buildCrops(cfg, async () => [box(0, 0, 10, 10)])(await png(), new AbortController().signal)).rejects.toMatchObject({ kind: 'internal' })
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
   it('箱がなければ空', async () => {
     expect(await buildCrops(cfg, async () => [])(await png(), new AbortController().signal)).toEqual([])
   })

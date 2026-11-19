@@ -4,6 +4,7 @@ import sharp from 'sharp'
 import type { CheckDeps } from './check.ts'
 import type { Config } from './config.ts'
 import type { Box, Detector } from './detect.ts'
+import { CheckError } from './types.ts'
 
 /** 1 軸ぶん。区間 [lo, hi] を長さの margin 倍ずつ両側に広げ、min 未満なら中心を保って min にし、[0, size] の中へずらして収める。 */
 function span(lo: number, hi: number, margin: number, min: number, size: number): [number, number] {
@@ -24,7 +25,8 @@ export function buildCrops(cfg: Config, detector: Detector): NonNullable<CheckDe
   return async (png, signal) => {
     const boxes = await detector(png, signal)
     if (boxes.length === 0) return []
-    const { width: w = 0, height: h = 0 } = await sharp(png).metadata()
+    const { width: w, height: h } = await sharp(png).metadata()
+    if (!w || !h) throw new CheckError('internal', '画像の寸法を読み取れません')
     const out: Uint8Array[] = []
     for (const box of boxes) {
       const r = cropRect(box, w, h, cfg.detectMargin, cfg.detectMinSide)

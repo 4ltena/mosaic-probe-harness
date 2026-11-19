@@ -124,6 +124,7 @@ curl -L -o models/erax-anti-nsfw-yolo11m-v1.1.pt   https://huggingface.co/erax-a
 shasum -a 256 models/*   # Windows: certutil -hashfile <ファイル> SHA256
 ```
 
+- Windows の PowerShell では、`curl` が別のコマンド（`Invoke-WebRequest` の別名）なので `curl.exe` を使い、`mkdir -p models` の代わりに `New-Item -ItemType Directory -Force models` を使います。SHA-256 は上の `certutil` で確かめます。
 - イラスト用の検出器の入力は動的な形で、付属情報に `imgsz` がないため、`stretch` で 640×640 に引き伸ばして使います。クラスは `nipple_f`・`penis`・`pussy`、対象は `penis`・`pussy` です。
 - 画風の分類器の入力は `input` [1,3,384,384]、出力は [1,2] で、ラベルは `anime`・`real`（リポジトリの `meta.json` の順）です。
 
@@ -138,7 +139,7 @@ YOLO('erax-anti-nsfw-yolo11m-v1.1.pt').export(format='onnx', imgsz=640, dynamic=
 ```
 
 - 書き出された ONNX は、入力 `images` [1,3,640,640]、出力 `output0` [1,9,8400] です。クラスは `anus`・`make_love`・`nipple`・`penis`・`vagina` で、対象は `penis`・`vagina`・`anus`、前処理は `letterbox` です。
-- 変換後の ONNX のハッシュは、変換した環境の版によって変わります。**組み込み先の組織が、自分で変換したファイルの SHA-256 を `DETECT_PHOTO_SHA256` に記録してください**（参考: 上記の環境の変換では `3a6909939428c7ce2d33b8cc22be66561a6f95c1f09febdd351c85f81993bb19` でした）。`.pt` 側の SHA-256（上の表）で、変換元が同じであることを確かめられます。
+- 変換後の ONNX のハッシュは、変換した環境の版によって変わります。**組み込み先の組織が、自分で変換したファイルの SHA-256 を `DETECT_PHOTO_SHA256` に記録してください**（参考: 上記の環境の変換では `3a6909939428c7ce2d33b8cc22be66561a6f95c1f09febdd351c85f81993bb19` でした。**この値はコピーせず、自分の変換の値を記録してください**）。`.pt` 側の SHA-256（上の表）で、変換元が同じであることを確かめられます。
 - 書き出された ONNX の付属情報には、ライセンスが `AGPL-3.0 License (https://ultralytics.com/license)`、作者が Ultralytics と入っています。次の「ライセンスの注意」を参照してください。
 
 ### 8.3 設定の例
@@ -154,11 +155,24 @@ STYLE_MODEL=models/style.onnx
 STYLE_SHA256=c02d68cc7f56dbcbcd4f41a10df190385c1f963f22c4eefb8d162869800ed3b0
 ```
 
-検出器を 1 つだけ使う場合は `STYLE_MODEL` を設定せず、その検出器を常に使います。起動時に、ファイル・SHA-256・クラス名・試しの推論を検査し、失敗したら変数名を示して止まります（パスと値は出しません）。評価 CLI（`eval/run_eval.ts`）も同じ設定で動きます。`onnxruntime-node` の install スクリプトは、linux/x64 では CUDA 向けのパッケージを取得します。取得を止めるには、環境変数 `ONNXRUNTIME_NODE_INSTALL=skip`（または npm の設定 `onnxruntime-node-install=skip`）を付けて `npm ci` を実行します。**`npm ci --omit=optional` は使わないでください**（`sharp` のプラットフォーム別のバイナリも入らなくなります）。
+検出器を 1 つだけ使う場合は `STYLE_MODEL` を設定せず、その検出器を常に使います。起動時に、ファイル・SHA-256・クラス名・試しの推論を検査し、失敗したら変数名を示して止まります（パスと値は出しません）。評価 CLI（`eval/run_eval.ts`）も同じ設定で動きます。`onnxruntime-node` の install スクリプトは、linux/x64 では CUDA 向けのパッケージを取得します。linux/x64 で取得されるものは、ハッシュで照合されません。**`DETECT` を使わない配置では、`ONNXRUNTIME_NODE_INSTALL=skip` を推奨します**。取得を止めるには、環境変数 `ONNXRUNTIME_NODE_INSTALL=skip`（または npm の設定 `onnxruntime-node-install=skip`）を付けて `npm ci` を実行します。**`npm ci --omit=optional` は使わないでください**（`sharp` のプラットフォーム別のバイナリも入らなくなります）。
 
 ### 8.4 判定回数と時間の目安
 
 各描画の判定は、全体の 1 回に加えて切り出しが最大 `DETECT_MAX_CROPS` 回です。1 件の要求の判定回数は、最悪で「描画数 ×（1 + `DETECT_MAX_CROPS`）」になります（既定の `DETECT_MAX_CROPS=4` では、PSD の 32 描画で 160 回、GIF の 100 フレームで 500 回）。これに描画ごとの ONNX の推論（`DETECT_THREADS`）が加わります。**クライアントのタイムアウトと `QUEUE_TIMEOUT_S` を見直してください**。時間は実測で確かめ、重いときは `DETECT_MAX_CROPS` を下げます。
+
+M5 の実測（Mac mini M6、32 GB。判定器は Qwen3.8-27B）です。
+
+- 検出: 1 描画あたり 65〜165 ms。
+- RSS: 98 MB → 読み込み後 693 MB → 最大 897 MB。
+- イベントループ: `onnxruntime-node` の推論は JS のスレッドで同期に動くため、1 回で最大約 100 ms 止まります（`/healthz` の応答の最大は 76 ms）。同時の要求が増えると積み重なります。`worker_threads` への移設は先送りしています。
+- 25 枚の通し: 1 枚あたりの平均が 6.9 秒から 9.7 秒になりました。
+
+#### 前処理の既知の差
+
+- `letterbox`（写真用）のスコアは、参照（Ultralytics、cv2 の `INTER_LINEAR`）と最大 0.05 程度ずれうります（M5 の実測は 0.0498）。
+- `stretch` で 640 へ拡大する画像は、参照との一致を確かめていません。
+- しきい値（`DETECT_*_THRESHOLD`）を詰めるときは、この差の分の余裕を持たせてください。
 
 ### 8.5 回復と較正の写し
 
@@ -187,6 +201,6 @@ STYLE_SHA256=c02d68cc7f56dbcbcd4f41a10df190385c1f963f22c4eefb8d162869800ed3b0
 
 - 評価データ・結果: `eval/images/`、`eval/labels.csv`、`eval/results.jsonl`
 - ローカル設定: `calibration.json`、`docbase.json`、`.env`（API キーを含みうる。共有フォルダと配布物に入れない。macOS では `chmod 600 .env`、Windows では利用者だけが読めるフォルダに置く）
-- モデルファイル: `models/`、`*.onnx`（変換元の `.pt` も `models/` に置く。`.gitignore` の対象は `models/` と `*.onnx` で、`models/` の外の `.pt` は対象外なので、ステージしない）
+- モデルファイル: `models/`、`*.onnx`（配布物にも含めない。変換元の `.pt` も `models/` に置く。`.gitignore` の対象は `models/` と `*.onnx` で、`models/` の外の `.pt` は対象外なので、ステージしない）
 - DocBase 由来: `rules/docbase/`、`rules.local.md`
 - 認証情報: API キー、DocBase トークン

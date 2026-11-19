@@ -306,6 +306,7 @@ describe('config: 空の値は未設定、DETECT（既定オフ）', () => {
     expect(() => assertKnownDetectKeys(['DETECT_ANIME_THRESHLD'])).toThrow(/DETECT_ANIME_THRESHLD/)
     expect(() => assertKnownDetectKeys(['STYLE_X'])).toThrow(/STYLE_X/)
     expect(() => assertKnownDetectKeys(['detect_anime_model'])).toThrow(/detect_anime_model/)
+    expect(() => assertKnownDetectKeys(['detect'])).toThrow(/detect/)
     expect(loadConfig({ DETECT_X: '1' }, '.').detect).toBe(false)
   })
 })
