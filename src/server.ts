@@ -9,21 +9,33 @@ import { createGate } from './gate.ts'
 import { normalize } from './images.ts'
 import { createHttpServer } from './http.ts'
 import { renderVariants } from './layers.ts'
+import { buildCrops } from './crops.ts'
 import { createMcpHandler } from './mcp.ts'
-import { Calibrator } from './probability.ts'
+import { Calibrator, assertIncreasingCalibration } from './probability.ts'
 import { loadEnvFile } from './env-file.ts'
 import { createRecheck } from './recheck.ts'
 import { buildJudges } from './vlm.ts'
 
 export interface ServerOverrides {
   log?: (line: string) => void
+  /** DETECT=1 のときに必須の切り出し。main() が createDetector と buildCrops で作る。 */
+  crops?: CheckDeps['crops']
 }
 
-/** 設定から HTTP サーバーを組み立てる（listen は呼び出し側）。ループバック以外でキーが無ければ投げる。 */
+/**
+ * 設定から HTTP サーバーを組み立てる（listen は呼び出し側）。ループバック以外でキーが無ければ投げる。
+ * DETECT=1 なのに crops がないとき、較正が単調増加でないときも投げる。
+ */
 export function buildServer(cfg: Config, overrides: ServerOverrides = {}): Server {
   assertSafeBind(cfg)
   const log = overrides.log ?? ((line: string) => console.log(line))
   const cal = Calibrator.load(cfg.calibrationPath)
+  if (cfg.detect) {
+    if (!overrides.crops) throw new Error('DETECT=1 には切り出し（crops）の組み立てが必要です')
+    assertIncreasingCalibration(cal)
+    const detectors = [cfg.detectAnime, cfg.detectPhoto].filter(Boolean).length
+    log(`前段の検出: 有効（検出器 ${detectors}、分類器${cfg.style ? 'あり' : 'なし'}）`)
+  }
   const judges = buildJudges(cfg)
 
   // 再判定は既定オフ。有効時だけ Pi のチャット（llama-server の OpenAI 互換口）を渡す。
@@ -66,6 +78,7 @@ export function buildServer(cfg: Config, overrides: ServerOverrides = {}): Serve
     cal,
     recheck,
     log,
+    crops: overrides.crops,
   }
   // 判定（数値）と詳細は同じゲート・同じ signal で包む
   const gated =
@@ -89,7 +102,11 @@ export function buildServer(cfg: Config, overrides: ServerOverrides = {}): Serve
 
 async function main(): Promise<void> {
   const cfg = loadConfig(loadEnvFile())
-  const server = buildServer(cfg)
+  // DETECT=0 では detect.ts も ONNX ランタイムも読み込まない
+  const crops = cfg.detect
+    ? buildCrops(cfg, await (await import('./detect.ts')).createDetector(cfg, process.cwd()))
+    : undefined
+  const server = buildServer(cfg, { crops })
   await new Promise<void>((ok, ng) => {
     server.once('error', ng)
     server.listen(cfg.port, cfg.bind, () => ok())

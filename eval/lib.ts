@@ -1,6 +1,11 @@
-// 評価の純粋な関数（CSV 解析・集計）。実行の本体は run_eval.ts。
+// 評価の純粋な関数（CSV 解析・集計）と判定の組み立て。実行の本体は run_eval.ts。import しても何も動かさない。
+import type { CheckDeps } from '../src/check.ts'
+import type { Config } from '../src/config.ts'
+import { normalize } from '../src/images.ts'
+import { renderVariants } from '../src/layers.ts'
+import { Calibrator, assertIncreasingCalibration, label as judgeLabel } from '../src/probability.ts'
 import type { Judgment, Label } from '../src/types.ts'
-import { label as judgeLabel } from '../src/probability.ts'
+import { buildJudges } from '../src/vlm.ts'
 
 export const EVAL_KINDS = ['ng', 'ok', 'none', 'attack', 'forgot', 'nori'] as const
 export type EvalKind = (typeof EVAL_KINDS)[number]
@@ -58,4 +63,21 @@ export function kindConfusion(
     row[judgment] = (row[judgment] ?? 0) + 1
   }
   return out
+}
+
+/** 評価の判定の依存（再判定は使わない）。DETECT=1 なら crops が必須で、較正が単調増加でなければ止める。 */
+export function buildEvalDeps(cfg: Config, crops?: CheckDeps['crops']): CheckDeps {
+  const cal = Calibrator.load(cfg.calibrationPath)
+  if (cfg.detect) {
+    if (!crops) throw new Error('DETECT=1 には切り出し（crops）の組み立てが必要です')
+    assertIncreasingCalibration(cal)
+  }
+  return { renderVariants, normalize, cal, judges: buildJudges(cfg), crops }
+}
+
+/** --write の較正を当てはめる。DETECT=1 で a ≤ 0 になったら投げる（呼び出し側は書かずに止まる）。 */
+export function fitCalibration(cfg: Config, qs: number[], ys: number[]): Calibrator {
+  const fitted = Calibrator.fit(qs, ys)
+  if (cfg.detect) assertIncreasingCalibration(fitted)
+  return fitted
 }

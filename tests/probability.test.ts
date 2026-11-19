@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Calibrator, aggregate, chooseThresholds, judge4, label, reliability } from '../src/probability.ts'
+import { Calibrator, aggregate, assertIncreasingCalibration, chooseThresholds, judge4, label, reliability } from '../src/probability.ts'
 import type { Probs4 } from '../src/types.ts'
 
 const logLoss = (ps: number[], ys: number[]): number => {
@@ -55,6 +55,15 @@ describe('Calibrator', () => {
       expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ version: 'v1.1', a: 0.5, b: -0.25 })
     } finally {
       rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('assertIncreasingCalibration は a > 0 だけを通す（値は文言に出さない）', () => {
+    expect(() => assertIncreasingCalibration(new Calibrator())).not.toThrow()
+    expect(() => assertIncreasingCalibration(new Calibrator(1e-9, -3))).not.toThrow()
+    for (const a of [0, -0.5, Number.NaN]) {
+      expect(() => assertIncreasingCalibration(new Calibrator(a, 0.123))).toThrow(/DETECT=1/u)
+      expect(() => assertIncreasingCalibration(new Calibrator(a, 0.123))).not.toThrow(/0\.123|0\.5/u)
     }
   })
 })

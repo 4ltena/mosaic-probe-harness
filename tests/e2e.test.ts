@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto'
+import { rmSync, writeFileSync } from 'node:fs'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -9,6 +10,8 @@ import { writePsd, type Layer } from 'ag-psd'
 import sharp from 'sharp'
 import { afterEach, describe, expect, it } from 'vitest'
 import { DEFAULT_ALLOW_CIDRS, defaultConfig, type Config } from '../src/config.ts'
+import { buildCrops } from '../src/crops.ts'
+import type { Detector } from '../src/detect.ts'
 import { sniff } from '../src/images.ts'
 import { buildServer } from '../src/server.ts'
 import type { Probs4 } from '../src/types.ts'
@@ -187,7 +190,8 @@ async function closedUrl(): Promise<string> {
   return url
 }
 
-async function startHarness(fake: Fake | { url: string }, over: Partial<Config> = {}) {
+/** detector を渡すと、本物の buildCrops で包んで DETECT=1 の切り出しにする。 */
+async function startHarness(fake: Fake | { url: string }, over: Partial<Config> = {}, detector?: Detector) {
   const lines: string[] = []
   const cfg = defaultConfig({
     bind: '127.0.0.1',
@@ -202,7 +206,8 @@ async function startHarness(fake: Fake | { url: string }, over: Partial<Config> 
     calibrationPath: NO_CAL,
     ...over,
   })
-  const url = await listen(buildServer(cfg, { log: (l) => lines.push(l) }))
+  const crops = detector && buildCrops(cfg, detector)
+  const url = await listen(buildServer(cfg, { log: (l) => lines.push(l), crops }))
   return { url, lines, cfg }
 }
 
@@ -418,20 +423,20 @@ describe('e2e: レイヤー付き PSD', () => {
   })
 })
 
-describe('e2e: 再判定（RECHECK=1）', () => {
-  // 左 1/4 だけ赤の 128×128。全体の平均は白寄り（一次判定は処理済み）、左 1/4 の切り出しは赤（再判定で未処理）。
-  const quarterRedPng = () => {
-    const n = 128
-    const raw = Buffer.alloc(n * n * 3, 255)
-    for (let y = 0; y < n; y++)
-      for (let x = 0; x < n / 4; x++) {
-        const i = (y * n + x) * 3
-        raw[i + 1] = 0
-        raw[i + 2] = 0
-      }
-    return sharp(raw, { raw: { width: n, height: n, channels: 3 } }).png().toBuffer()
-  }
+// 左 1/4 だけ赤の 128×128。全体の平均は白寄り（一次判定は処理済み）、左 1/4 の切り出しは赤（未処理）。
+const quarterRedPng = () => {
+  const n = 128
+  const raw = Buffer.alloc(n * n * 3, 255)
+  for (let y = 0; y < n; y++)
+    for (let x = 0; x < n / 4; x++) {
+      const i = (y * n + x) * 3
+      raw[i + 1] = 0
+      raw[i + 2] = 0
+    }
+  return sharp(raw, { raw: { width: n, height: n, channels: 3 } }).png().toBuffer()
+}
 
+describe('e2e: 再判定（RECHECK=1）', () => {
   it('エージェントが crop を呼び、切り出しの低い値で下げる（max_tokens と文脈長が実用の大きさ）', async () => {
     const fake = await startFake()
     // 範囲を全域にして、必ず再判定に入るようにする
@@ -873,5 +878,89 @@ describe('e2e: v1.1 のモデル統合とアニメーション', () => {
       expect(await res.json()).toMatchObject({ error: 'too_large' })
     }
     expect(fake.judgeCalls).toBe(0)
+  })
+})
+
+describe('e2e: 前段の検出（DETECT=1、偽の検出器と本物の切り出し）', () => {
+  const DET: Partial<Config> = { detect: true, detectMargin: 0, detectMinSide: 1 }
+  const MARK = '987.654'
+  const quarterBox: Detector = async () => [{ x0: 0, y0: 0, x1: 32, y1: 128, label: 'penis', score: 0.9 }]
+
+  it('左 1/4 の箱を切り出して判定し、全体が処理済みでも forgot の値と切り出しの render を返す（判定はちょうど 2 回）', async () => {
+    const fake = await startFake()
+    const { url } = await startHarness(fake, DET, quarterBox)
+    const res = await postDetail(url, await quarterRedPng(), 'image/png')
+    const body = JSON.parse(await res.text()) as DetailBody
+    expect(res.status).toBe(200)
+    expect(body.p_ok).toBeCloseTo(P_NG, 6)
+    expect(body.judgment).toBe('forgot')
+    // ラスターの PNG の描画名は「ラスター」（PSD の合成なら「見えているとおり」）
+    expect(body.render).toBe('ラスターの切り出し 1')
+    expect(fake.judgeCalls).toBe(2)
+
+    // DETECT=0 なら同じ画像は処理済み
+    const off = await startHarness(fake)
+    const plain = await postDetail(off.url, await quarterRedPng(), 'image/png')
+    expect((JSON.parse(await plain.text()) as DetailBody).p_ok).toBeCloseTo(P_OK, 6)
+  })
+
+  it('起動時に 1 行だけ出し、ログには座標もパスも出さない。アクセスログの書式は変わらない', async () => {
+    const fake = await startFake()
+    const spec = { model: join(tmpdir(), 'PATHMARK', 'anime.onnx'), sha256: undefined, labels: undefined, classes: ['penis'], threshold: 0.3, resize: 'stretch' as const }
+    const marked: Detector = async () => [{ x0: 0, y0: 0, x1: 32, y1: Number(MARK), label: 'penis', score: Number(MARK) / 1000 }]
+    const { url, lines } = await startHarness(fake, { ...DET, detectAnime: spec }, marked)
+    const res = await postDetail(url, await quarterRedPng(), 'image/png')
+    expect(res.status).toBe(200)
+    expect((JSON.parse(await res.text()) as DetailBody).p_ok).toBeCloseTo(P_NG, 6)
+    expect(lines.filter((l) => l.startsWith('前段の検出'))).toEqual(['前段の検出: 有効（検出器 1、分類器なし）'])
+    for (const l of lines) {
+      expect(l).not.toContain(MARK)
+      expect(l).not.toContain('987654')
+      expect(l).not.toContain('PATHMARK')
+    }
+    const access = lines.filter((l) => /^(GET|POST|OPTIONS) /u.test(l))
+    expect(access).toHaveLength(1)
+    for (const l of access) expect(l).toMatch(/^(GET|POST|OPTIONS) \S+ \d{3} \d+ms sha12=\S+ size=\d+$/u)
+
+    // DETECT=0 では出さない
+    const off = await startHarness(fake)
+    expect(off.lines.some((l) => l.startsWith('前段の検出'))).toBe(false)
+  })
+
+  it('失敗: 検出の失敗は 500、切り出しの判定の失敗は 502。どちらも本文に p_ok も目印もない', async () => {
+    const fake = await startFake()
+    const broken: Detector = async () => {
+      throw new Error(`PATHMARK ${MARK}`)
+    }
+    const failing = await startHarness(fake, DET, broken)
+    const res = await postDetail(failing.url, await quarterRedPng(), 'image/png')
+    const text = await res.text()
+    expect(res.status).toBe(500)
+    expect(JSON.parse(text)).toMatchObject({ error: 'internal' })
+    for (const s of ['p_ok', 'PATHMARK', MARK]) expect(text).not.toContain(s)
+    expect(failing.lines.join('\n')).not.toContain('PATHMARK')
+
+    // 全体の判定のあとで判定サーバーを落とす → 切り出しの判定が失敗する
+    const down: Detector = async (png, signal) => {
+      fake.mode = 'error'
+      return quarterBox(png, signal)
+    }
+    const vlm = await startHarness(fake, DET, down)
+    const res2 = await postDetail(vlm.url, await quarterRedPng(), 'image/png')
+    const text2 = await res2.text()
+    expect(res2.status).toBe(502)
+    expect(JSON.parse(text2)).toMatchObject({ error: 'vlm' })
+    expect(text2).not.toContain('p_ok')
+  })
+
+  it('起動: DETECT=1 で crops がない、または較正が a ≤ 0 なら buildServer が投げる', async () => {
+    const fake = await startFake()
+    await expect(startHarness(fake, DET)).rejects.toThrow(/DETECT=1/u)
+    const path = join(tmpdir(), `mosaic-e2e-bad-calibration-${process.pid}.json`)
+    writeFileSync(path, JSON.stringify({ version: 'v1.1', a: -0.5, b: 0 }))
+    closers.push(async () => rmSync(path, { force: true }))
+    await expect(startHarness(fake, { ...DET, calibrationPath: path }, quarterBox)).rejects.toThrow(/DETECT=1/u)
+    // DETECT=0 なら同じ較正で起動できる
+    await expect(startHarness(fake, { calibrationPath: path })).resolves.toBeDefined()
   })
 })

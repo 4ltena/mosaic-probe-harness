@@ -6,12 +6,10 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { loadConfig } from '../src/config.ts'
 import { loadEnvFile } from '../src/env-file.ts'
-import { checkResult, type CheckDeps } from '../src/check.ts'
-import { renderVariants } from '../src/layers.ts'
-import { normalize } from '../src/images.ts'
-import { Calibrator, chooseThresholds, reliability } from '../src/probability.ts'
-import { buildJudges } from '../src/vlm.ts'
-import { EVAL_KINDS, isProblem, kindConfusion, parseLabels, summarize } from './lib.ts'
+import { checkResult } from '../src/check.ts'
+import { buildCrops } from '../src/crops.ts'
+import { chooseThresholds, reliability } from '../src/probability.ts'
+import { EVAL_KINDS, buildEvalDeps, fitCalibration, isProblem, kindConfusion, parseLabels, summarize } from './lib.ts'
 
 const evalDir = fileURLToPath(new URL('.', import.meta.url))
 
@@ -39,8 +37,11 @@ async function main(): Promise<void> {
   }
 
   const cfg = loadConfig(loadEnvFile())
-  const cal = Calibrator.load(cfg.calibrationPath)
-  const deps: CheckDeps = { renderVariants, normalize, cal, judges: buildJudges(cfg) }
+  // サーバーと同じ検出器と切り出し。DETECT=0 では detect.ts も ONNX ランタイムも読み込まない
+  const crops = cfg.detect
+    ? buildCrops(cfg, await (await import('../src/detect.ts')).createDetector(cfg, process.cwd()))
+    : undefined
+  const deps = buildEvalDeps(cfg, crops)
   const labels = parseLabels(readFileSync(labelsPath, 'utf8'))
 
   const results = []
@@ -112,7 +113,7 @@ async function main(): Promise<void> {
     const fitRows = results.filter((r) => isProblem(r.kind) || isOkLike(r.kind))
     const qs = fitRows.map((r) => r.q)
     const ys = fitRows.map((r) => (isProblem(r.kind) ? 1 : 0))
-    const fitted = Calibrator.fit(qs, ys).toJSON()
+    const fitted = fitCalibration(cfg, qs, ys).toJSON()
     writeFileSync(cfg.calibrationPath, JSON.stringify(fitted, null, 2) + '\n')
     console.log(`\ncalibration.json を書きました（a=${fitted.a.toFixed(4)}, b=${fitted.b.toFixed(4)}）`)
   }

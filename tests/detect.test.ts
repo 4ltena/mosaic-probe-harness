@@ -8,7 +8,7 @@ import {
   checkOutput, createDetector, decode, inputSize, iou, letterboxLayout, mapping, nms, parseNames, readMetadata,
   roundHalfEven, styleTensor, toProbs, toTensor, type Box,
 } from '../src/detect.ts'
-import { defaultConfig, type Config, type DetectorSpec, type StyleSpec } from '../src/config.ts'
+import { defaultConfig, loadConfig, type Config, type DetectorSpec, type StyleSpec } from '../src/config.ts'
 import { CheckError } from '../src/types.ts'
 
 const solid = (w: number, h: number, [r, g, b]: [number, number, number]) =>
@@ -388,6 +388,15 @@ describe('createDetector の起動時の検査', () => {
     const log: string[] = []
     await createDetector(one(), dir, async () => fakeOrt(log, zeros))
     expect(log.some((l) => l.includes('style'))).toBe(false)
+  })
+  it('SHA-256 は .env に小文字と大文字のどちらで書いても照合が通り、違う値なら止まる', async () => {
+    const sha = createHash('sha256').update(readFileSync(join(dir, 'anime.onnx'))).digest('hex')
+    for (const v of [sha, sha.toUpperCase()]) {
+      const c = loadConfig({ DETECT: '1', DETECT_ANIME_MODEL: 'anime.onnx', DETECT_ANIME_SHA256: v }, dir)
+      await expect(createDetector(c, dir, async () => fakeOrt([], zeros))).resolves.toBeTypeOf('function')
+    }
+    const bad = loadConfig({ DETECT: '1', DETECT_ANIME_MODEL: 'anime.onnx', DETECT_ANIME_SHA256: 'A'.repeat(64) }, dir)
+    fixed(await message(createDetector(bad, dir, async () => fakeOrt([], zeros))), 'DETECT_ANIME_SHA256')
   })
 })
 

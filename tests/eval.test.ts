@@ -1,7 +1,11 @@
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
-import { kindConfusion, parseLabels, summarize } from '../eval/lib.ts'
+import sharp from 'sharp'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { buildEvalDeps, fitCalibration, kindConfusion, parseLabels, summarize } from '../eval/lib.ts'
+import { checkResult } from '../src/check.ts'
+import { defaultConfig, type Config } from '../src/config.ts'
 
 describe('parseLabels', () => {
   it('ヘッダ付き CSV を filename と kind の配列にする', () => {
@@ -110,5 +114,47 @@ describe('kindConfusion', () => {
 
   it('空なら空オブジェクト', () => {
     expect(kindConfusion([])).toEqual({})
+  })
+})
+
+describe('評価の組み立て（DETECT=1）', () => {
+  let dir: string
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'eval-lib-test-'))
+  })
+  afterAll(() => rmSync(dir, { recursive: true, force: true }))
+  const cfgOf = (o: Partial<Config> = {}) => defaultConfig({ detect: true, calibrationPath: join(dir, 'none.json'), ...o })
+
+  it('偽の crops を渡すと、判定の流れに配線される', async () => {
+    const crops = vi.fn(async (png: Uint8Array) => [png])
+    const deps = buildEvalDeps(cfgOf(), crops)
+    expect(deps.crops).toBe(crops)
+    expect(deps.recheck).toBeUndefined()
+    const judge = vi.fn(async () => ({ none: 0, processed: 1, forgot: 0, nori: 0 }))
+    const png = await sharp({ create: { width: 8, height: 8, channels: 3, background: '#fff' } }).png().toBuffer()
+    const { detail } = await checkResult(new Uint8Array(png), cfgOf(), { ...deps, judges: [{ name: 'm', weight: 1, judge }] })
+    expect(crops).toHaveBeenCalledOnce()
+    expect(judge).toHaveBeenCalledTimes(2)
+    expect(detail.render).toBe('ラスター')
+  })
+
+  it('DETECT=1 で crops がないとき、較正が a ≤ 0 のときは止まる（DETECT=0 なら止まらない）', () => {
+    const crops = async () => []
+    expect(() => buildEvalDeps(cfgOf())).toThrow(/DETECT=1/u)
+    for (const a of [0, -1]) {
+      const path = join(dir, `calibration-${a}.json`)
+      writeFileSync(path, JSON.stringify({ version: 'v1.1', a, b: 0 }))
+      expect(() => buildEvalDeps(cfgOf({ calibrationPath: path }), crops)).toThrow(/DETECT=1/u)
+      expect(() => buildEvalDeps(defaultConfig({ calibrationPath: path }))).not.toThrow()
+    }
+  })
+
+  it('--write: DETECT=1 で当てはめた a が 0 以下なら投げる（書かずに止まる）', () => {
+    // 問題ありほど q が低い（逆向き）なので、a は負になる
+    const qs = [0.1, 0.2, 0.15, 0.8, 0.9, 0.85]
+    const ys = [1, 1, 1, 0, 0, 0]
+    expect(fitCalibration(defaultConfig(), qs, ys).a).toBeLessThan(0)
+    expect(() => fitCalibration(cfgOf(), qs, ys)).toThrow(/DETECT=1/u)
+    expect(fitCalibration(cfgOf(), qs, [0, 0, 0, 1, 1, 1]).a).toBeGreaterThan(0)
   })
 })

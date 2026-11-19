@@ -85,6 +85,14 @@ export class Calibrator {
 }
 
 /**
+ * DETECT=1 のときにサーバーと評価 CLI が呼ぶ。較正が単調増加（a > 0）でないと、
+ * 切り出しのどれか 1 つでも NG なら NG にする、が崩れるので止める（値は出さない）。
+ */
+export function assertIncreasingCalibration(cal: Calibrator): void {
+  if (!(cal.a > 0)) throw new Error('DETECT=1 では較正の a が正である必要があります（calibration.json を見直してください。--write では書きません）')
+}
+
+/**
  * 閾値で 3 段階に分ける。pNg = 1 - p_ok で比べる。
  * pNg <= tOk なら pass、pNg >= tNg なら stop、その間は hold。
  */
