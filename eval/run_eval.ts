@@ -2,9 +2,10 @@
 // 画像ごとに最悪の描画を採用して判定し、混同行列・保留率・信頼度・推奨閾値を表示する。
 // --write のときだけ calibration.json を書く。推奨閾値はサーバーには渡さない。
 import { readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join, resolve } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { loadConfig } from '../src/config.ts'
+import { loadEnvFile } from '../src/env-file.ts'
 import { checkResult, type CheckDeps } from '../src/check.ts'
 import { renderVariants } from '../src/layers.ts'
 import { normalize } from '../src/images.ts'
@@ -37,7 +38,7 @@ async function main(): Promise<void> {
     return
   }
 
-  const cfg = loadConfig()
+  const cfg = loadConfig(loadEnvFile())
   const cal = Calibrator.load(cfg.calibrationPath)
   const deps: CheckDeps = { renderVariants, normalize, cal, judges: buildJudges(cfg) }
   const labels = parseLabels(readFileSync(labelsPath, 'utf8'))
@@ -117,7 +118,11 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((e: unknown) => {
-  console.error(e instanceof Error ? e.message : String(e))
-  process.exitCode = 1
-})
+// 直接実行されたときだけ動かす（テストからの import では動かさない。src/server.ts と同じ判定）
+const entry = process.argv[1]
+if (entry && pathToFileURL(resolve(entry)).href === import.meta.url) {
+  main().catch((e: unknown) => {
+    console.error(e instanceof Error ? e.message : String(e))
+    process.exitCode = 1
+  })
+}

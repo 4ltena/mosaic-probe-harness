@@ -11,6 +11,7 @@ import { createHttpServer } from './http.ts'
 import { renderVariants } from './layers.ts'
 import { createMcpHandler } from './mcp.ts'
 import { Calibrator } from './probability.ts'
+import { loadEnvFile } from './env-file.ts'
 import { createRecheck } from './recheck.ts'
 import { buildJudges } from './vlm.ts'
 
@@ -87,7 +88,7 @@ export function buildServer(cfg: Config, overrides: ServerOverrides = {}): Serve
 }
 
 async function main(): Promise<void> {
-  const cfg = loadConfig()
+  const cfg = loadConfig(loadEnvFile())
   const server = buildServer(cfg)
   await new Promise<void>((ok, ng) => {
     server.once('error', ng)

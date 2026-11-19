@@ -25,3 +25,7 @@ dist/
 eval/labels.csv
 .env.*
 .github/copilot-instructions.md
+!.env.example
+# モデルファイル（リポジトリに入れない）
+models/
+*.onnx
