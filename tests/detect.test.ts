@@ -99,16 +99,20 @@ describe('後処理', () => {
     expect(out[0]!.score).toBeCloseTo(0.9, 6)
   })
 
-  it('(e) 方式ごとに、元の箱をモデル座標に写して戻すと同じ箱になる', () => {
-    for (const mode of ['stretch', 'letterbox', 'pad'] as const) {
-      const m = mapping(mode, 200, 100, 640, 640)
-      const fwd = ([x0, y0, x1, y1]: Xyxy): Xyxy => [x0 * m.gx + m.ox, y0 * m.gy + m.oy, x1 * m.gx + m.ox, y1 * m.gy + m.oy]
-      const o = yolo(1, [{ b: fwd([20, 10, 60, 50]), c: 0, s: 0.9 }, { b: [-50, -50, 700, 700], c: 0, s: 0.8 }])
-      const out = decode(o.data, o.dims[2]!, ['x'], 0.3, 0.99, m, 200, 100)
+  it('(e) 方式ごとに、元の箱のモデル座標を出力に置くと元の箱に戻る', () => {
+    // 200×100 を 640 に入れたときの [20,10,60,50] のモデル座標を、参照の式から直に書く（mapping() は使わない）
+    // stretch: x·640/200, y·640/100。pad: 200×200 にしてから x·640/200, y·640/200。letterbox: r = 3.2、上に 160 行
+    const model: Record<'stretch' | 'letterbox' | 'pad', Xyxy> = {
+      stretch: [64, 64, 192, 320],
+      pad: [64, 32, 192, 160],
+      letterbox: [64, 192, 192, 320],
+    }
+    for (const [mode, b] of Object.entries(model) as [keyof typeof model, Xyxy][]) {
+      const o = yolo(1, [{ b, c: 0, s: 0.9 }, { b: [-50, -50, 700, 700], c: 0, s: 0.8 }])
+      const out = decode(o.data, o.dims[2]!, ['x'], 0.3, 0.99, mapping(mode, 200, 100, 640, 640), 200, 100)
       // はみ出す箱は、範囲に切り詰めた整数になる
       expect(out.map(xyxy), mode).toEqual([[20, 10, 60, 50], [0, 0, 200, 100]])
     }
-    expect(mapping('letterbox', 200, 100, 640, 640)).toEqual({ ox: 0, oy: 160, gx: 3.2, gy: 3.2 })
   })
 
   it('(e) 丸めは numpy と同じく偶数へ', () => {
