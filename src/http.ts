@@ -21,7 +21,8 @@ export interface DetailJson {
   confidence?: number
   render?: string
   classes?: Detail['classes']
-  per_model?: Detail['perModel']
+  /** モデル別の ok / ng（内部の 4 語を classes と同じ式でまとめたもの）。 */
+  per_model?: Record<string, Detail['classes']>
   /** DETECT=1 の detail だけ。style と p_real は分類器がなければ null。箱の座標は width × height の描画の画素。 */
   detect?: {
     style: Style['use'] | null
@@ -32,7 +33,7 @@ export interface DetailJson {
   }
 }
 
-const JUDGMENTS: readonly string[] = ['ok', 'forgot', 'nori']
+const JUDGMENTS: readonly string[] = ['ok', 'ng']
 
 /**
  * fields の文字列（カンマ区切り）を解釈する。空・未知の項目・空要素があれば undefined（呼び出し側が 400 にする）。
@@ -52,22 +53,22 @@ export function detailJson(d: Detail, fields?: readonly DetailField[]): DetailJs
   const ok = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1
   const c = d.classes
   if (!ok(d.pOk) || typeof d.render !== 'string' || !c) return undefined
-  if (!ok(c.ok) || !ok(c.forgot) || !ok(c.nori)) return undefined
+  if (!ok(c.ok) || !ok(c.ng)) return undefined
   if (!JUDGMENTS.includes(d.judgment) || !ok(d.confidence)) return undefined
   const out: DetailJson = { p_ok: d.pOk }
   const selected = fields ?? DETAIL_FIELDS
   if (selected.includes('judgment')) out.judgment = d.judgment
   if (selected.includes('confidence')) out.confidence = d.confidence
   if (selected.includes('render')) out.render = d.render
-  if (selected.includes('classes')) out.classes = { ok: c.ok, forgot: c.forgot, nori: c.nori }
+  if (selected.includes('classes')) out.classes = { ok: c.ok, ng: c.ng }
   if (!fields) {
     if (!d.perModel) return undefined
     const entries = Object.entries(d.perModel)
     for (const [, p] of entries) {
       if (!p || !ok(p.none) || !ok(p.processed) || !ok(p.forgot) || !ok(p.nori)) return undefined
     }
-    out.per_model = Object.fromEntries(entries.map(([name, { none, processed, forgot, nori }]) =>
-      [name, { none, processed, forgot, nori }]))
+    out.per_model = Object.fromEntries(entries.map(([name, p]) =>
+      [name, { ok: Math.min(1, p.none + p.processed), ng: Math.max(p.forgot, p.nori) }]))
     const f = d.detect
     if (f) {
       const px = (v: unknown, max: number) => Number.isInteger(v) && (v as number) >= 0 && (v as number) <= max

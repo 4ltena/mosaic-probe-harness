@@ -1,7 +1,8 @@
 // 全タスク共通の型。ここを変更するときは計画書の「共有契約」も直す。
 
 /**
- * 判定モデルの 4 語の確率（合計 1）。語は none=対象なし / processed=処理済み / forgot=かけ忘れ・処理不足 / nori=黒い帯・枠で隠している。
+ * 判定モデルの 4 語の確率（合計 1）。語は none=対象なし / processed=処理済み / forgot=かけ忘れ・処理不足 / nori=黒や白の帯・線・枠で隠している。
+ * 4 語は内部だけで使い、応答では ok（none + processed）と ng（forgot と nori の大きい方）の 2 つにまとめる。
  */
 export interface Probs4 {
   none: number
@@ -17,14 +18,14 @@ export interface Judge {
   judge(png: Uint8Array, signal?: AbortSignal): Promise<Probs4>
 }
 
+/** ok = none + processed、ng = max(forgot, nori)（judge4 の okMass と ngMass）。 */
 export interface Classes {
   ok: number
-  forgot: number
-  nori: number
+  ng: number
 }
 
-/** 総合判断。4 語の判定のうち、統合後に選ばれた答え（ok = 対象なし・処理済みのどちらか）。 */
-export type Judgment = 'ok' | 'forgot' | 'nori'
+/** 総合判断。統合後に okMass ≥ ngMass なら ok、そうでなければ ng（かけ忘れとノリは区別しない）。 */
+export type Judgment = 'ok' | 'ng'
 
 /** 詳細応答で選べる項目（p_ok は常に含む）。`?fields=judgment,confidence`（MCP は fields 引数）で絞る。 */
 export const DETAIL_FIELDS = ['judgment', 'confidence', 'render', 'classes'] as const

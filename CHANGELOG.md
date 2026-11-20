@@ -10,6 +10,14 @@
 - `DETECT=1` で `--write` した `calibration.json` は `DETECT=1` 用です。`DETECT=0` に戻すときは、以前のファイルに戻すか削除してください。
 - `onnxruntime-node`（1.31.1）は `optionalDependencies` です。
 
+### 総合判断は `ok`・`ng` の 2 値に
+
+`detail` の `judgment` は `ok` か `ng` になります（以前は `ok`・`forgot`・`nori`）。`classes` は `{"ok", "ng"}`（`ng` は `forgot` と `nori` の大きい方）、`per_model` もモデルごとの `{"ok", "ng"}` になり、4 語の確率は返しません。判定の式と `p_ok` は変わりません。`judgment` の `forgot`・`nori` や `classes.forgot` を読んでいる呼び出し側は直してください。
+
+### ノリに白線を含める
+
+判定モデルへの指示と公開用の `rules.md` で、ノリを「黒い・白い帯、線、枠、塗り」とし、白線や白抜きで隠したものも `nori`（NG）にしました。`rules.local.md` を使う場合は、そちらも見直してください。
+
 ### 設定ファイル `.env`
 
 サーバーと評価 CLI は、アプリのルートの `.env` を読みます。環境変数が同じ名前なら環境変数が優先されます。例は `.env.example` です。

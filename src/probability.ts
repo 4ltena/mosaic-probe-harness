@@ -172,7 +172,7 @@ const KEYS4 = ['none', 'processed', 'forgot', 'nori'] as const
 
 /**
  * 統合後の 4 語の確率から判定を作る（仕様 §1）。
- * okMass = none + processed、ngMass = max(forgot, nori)、ngKind は多い方の NG 種。
+ * okMass = none + processed、ngMass = max(forgot, nori)。judgment は ok / ng の 2 値で、NG の種類は返さない。
  * q は較正前の NG 確率。較正を指定しなければ恒等。
  */
 export function judge4(p: Probs4, cal?: Calibrator): {
@@ -189,14 +189,13 @@ export function judge4(p: Probs4, cal?: Calibrator): {
   const total = okMass + ngMass
   if (!(total > 0)) throw new Error('確率の合計が 0 です')
   const q = ngMass / total
-  const ngKind: 'forgot' | 'nori' = p.forgot >= p.nori ? 'forgot' : 'nori'
-  const judgment: Judgment = okMass >= ngMass ? 'ok' : ngKind
+  const judgment: Judgment = okMass >= ngMass ? 'ok' : 'ng'
   return {
     q,
     pOk: clampUnit(1 - (cal?.apply(q) ?? q)),
     judgment,
     confidence: judgment === 'ok' ? okMass : ngMass,
-    classes: { ok: okMass, forgot: p.forgot, nori: p.nori },
+    classes: { ok: okMass, ng: ngMass },
     okMass,
     ngMass,
   }

@@ -152,8 +152,8 @@ describe('judge4（仕様 §1 の式）', () => {
     expect(r.okMass).toBeCloseTo(0.7, 9)
     expect(r.ngMass).toBeCloseTo(0.25, 9)
     expect(r.classes.ok).toBeCloseTo(0.7, 9)
-    expect(r.classes.forgot).toBeCloseTo(0.25, 9)
-    expect(r.classes.nori).toBeCloseTo(0.05, 9)
+    // ng は forgot と nori の大きい方（応答は ok / ng の 2 つだけ）
+    expect(r.classes).toEqual({ ok: r.okMass, ng: r.ngMass })
   })
 
   it('pOk（恒等較正）は okMass / (okMass + ngMass)', () => {
@@ -166,15 +166,15 @@ describe('judge4（仕様 §1 の式）', () => {
     expect(r.confidence).toBeCloseTo(0.7, 9)
   })
 
-  it('NG 側が勝つとき judgment は多い方の NG 種（nori）、confidence は ngMass', () => {
+  it('NG 側が勝つとき judgment は ng（nori が多くても種類は返さない）、confidence は ngMass', () => {
     const r = judge4({ none: 0, processed: 0.2, forgot: 0.1, nori: 0.7 })
-    expect(r.judgment).toBe('nori')
+    expect(r.judgment).toBe('ng')
     expect(r.confidence).toBeCloseTo(0.7, 9)
   })
 
-  it('NG 側が勝ち forgot が多ければ judgment は forgot', () => {
+  it('NG 側が勝ち forgot が多くても judgment は ng', () => {
     const r = judge4({ none: 0, processed: 0.1, forgot: 0.8, nori: 0.1 })
-    expect(r.judgment).toBe('forgot')
+    expect(r.judgment).toBe('ng')
     expect(r.confidence).toBeCloseTo(0.8, 9)
   })
 
@@ -184,9 +184,9 @@ describe('judge4（仕様 §1 の式）', () => {
     expect(r.pOk).toBeCloseTo(0.6 / 0.9, 9)
   })
 
-  it('同率: okMass ≥ ngMass なら ok、NG 側同士なら forgot', () => {
+  it('同率: okMass ≥ ngMass なら ok、下回れば ng', () => {
     expect(judge4({ none: 0, processed: 0.5, forgot: 0.25, nori: 0.25 }).judgment).toBe('ok')
-    expect(judge4({ none: 0, processed: 0.25, forgot: 0.375, nori: 0.375 }).judgment).toBe('forgot')
+    expect(judge4({ none: 0, processed: 0.25, forgot: 0.375, nori: 0.375 }).judgment).toBe('ng')
   })
 
   it('対象なし（none = 1）なら pOk は 1', () => {

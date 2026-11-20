@@ -75,7 +75,7 @@ async function main(): Promise<void> {
   console.log(`保留率: ${(s.holdRate * 100).toFixed(1)}%`)
 
   // 種類別の混同行列（行: 期待した kind / 列: 最悪の描画の総合判断）
-  const cols = ['ok', 'forgot', 'nori']
+  const cols = ['ok', 'ng']
   const conf = kindConfusion(rows)
   console.log('\n=== 種類別の混同行列（行: 期待 / 列: 予測） ===')
   console.log(['expected'.padEnd(14), ...cols.map((c) => c.padStart(12))].join(''))

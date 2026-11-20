@@ -3,7 +3,7 @@
 画像（PSD などのレイヤー付きファイルを含む）を受け取り、**「モザイク処理が必要な部位が存在しない、または十分に処理されている確率（`p_ok`）」**を `0` 〜 `1` の数値 1 個で返すローカル API サーバーです。
 
 - **推論バックエンド**: 同一ホスト（またはローカルネットワーク）上の `llama.cpp`（`llama-server`、マルチモーダル対応 Qwen VLM）を利用します。
-- **確率算出**　モデルの4語 `none`、`processed`、`forgot`、`nori` の先頭トークンの確率を集め、複数モデルの構成では描画ごとに重み付き平均を取ります。詳細応答には総合判断とモデル別の確率が入ります。
+- **確率算出**　モデルの4語 `none`、`processed`、`forgot`、`nori` の先頭トークンの確率を集め、複数モデルの構成では描画ごとに重み付き平均を取ります。詳細応答の総合判断と確率は `ok`・`ng` の 2 つにまとめて返します（4 語は内部だけで使います）。
 - **呼び出し方法**: REST API（ブラウザ・Node.js などの HTTP クライアント）および MCP（Streamable HTTP）に対応しています。
 - **判定の委譲**: 既定の応答は確率値 `p_ok` です。しきい値に基づく OK / NG の最終判定は呼び出し側で行ってください。
 - **前段の検出（任意・既定オフ）**: `DETECT=1` にすると、画風（写真かイラストか）に合った検出器で部位を見つけ、その部分の切り出しも同じ判定器で判定して、全体と切り出しのうち最も悪い候補を採ります。API の形は変わりません。[設定](#前段の画風分類部位検出と切り出し判定試験機能既定オフ)
@@ -119,15 +119,15 @@ curl -X POST "http://<サーバーのIP>:8790/v1/check?detail=1" \
 成功時の応答（`200`、`application/json`）の例:
 
 ```json
-{"p_ok":0.12,"judgment":"forgot","confidence":0.88,"render":"モザイク名のレイヤーを非表示","classes":{"ok":0.12,"forgot":0.88,"nori":0},"per_model":{"default":{"none":0.02,"processed":0.1,"forgot":0.88,"nori":0}}}
+{"p_ok":0.12,"judgment":"ng","confidence":0.88,"render":"モザイク名のレイヤーを非表示","classes":{"ok":0.12,"ng":0.88},"per_model":{"default":{"ok":0.12,"ng":0.88}}}
 ```
 
 - `p_ok` は全描画の最小値です。較正を設定している場合は適用済みです。
-- `judgment` は `ok`、`forgot`、`nori` のいずれかです。`ok` の確率と NG 側で最大の確率を比較し、同率なら `ok` を選びます。NG の種類が同率なら `forgot` を選びます。
+- `judgment` は `ok` か `ng` です。`ok` の確率と NG 側の確率（かけ忘れ・処理不足とノリのうち大きい方）を比較し、同率なら `ok` を選びます。NG の種類は返しません。
 - `confidence` は選ばれた `judgment` の較正前の確率です。
 - `render` は `p_ok` が最小だった描画です。アニメーションでは「フレーム 4/12」のように表示します。`DETECT=1` で切り出しが最悪だったときは、「見えているとおりの切り出し 2」のように、描画名に「の切り出し k」が付きます（PSD の例です。ラスター画像なら「ラスターの切り出し 1」のようになります。箱の座標は `detect` に入ります）。
-- `classes` はその描画の統合済みの確率です。`ok` は対象なしと処理済みの合計、`forgot` はかけ忘れ・処理不足、`nori` は黒い帯や枠による処理です。
-- `per_model` はその描画のモデル別の4語の確率です。キーは `JUDGES` の `name` です。
+- `classes` はその描画の統合済みの確率です。`ok` は対象なしと処理済みの合計、`ng` はかけ忘れ・処理不足とノリ（黒や白の帯・線・塗りで隠したもの）のうち大きい方です。
+- `per_model` はその描画のモデル別の `ok`・`ng` で、`classes` と同じ式でまとめた値です。キーは `JUDGES` の `name` です。
 - `detect` は `DETECT=1` のときだけ付きます。`p_ok` が最小だった候補の描画について、画風の分類と、検出器が見つけた箱を返します。`style` は使った検出器で、`illust`（イラスト用）、`photo`（写真用）、`both`（判別できず両方）のいずれかです。`p_real` は写真である確率です。分類器がなければ、どちらも `null` です。`boxes` の各要素は `label`（クラス名）、`score`、左上の `x0`・`y0`、右下の `x1`・`y1` です。座標は判定に使った描画（`MAX_EDGE` などで縮小したあと）の画素で、その寸法が `width`・`height` です。元の画像に重ねるときは、`width`・`height` との比で拡大してください。切り出さなかった箱（描画全体と同じ範囲）も含みます。
 - 失敗時は、既定の応答と同じエラー（`{"error": …}`）だけを返し、数値も詳細も返しません。
 - `detail` を付けても、判定の内容・時間は変わりません（同じ描画を判定し、結果の表示を増やすだけです）。
@@ -138,9 +138,9 @@ curl -X POST "http://<サーバーのIP>:8790/v1/check?detail=1" \
 
 | 欲しいもの | クエリ | 応答 |
 |---|---|---|
-| 総合判断だけ | `?fields=judgment` | `{"p_ok":0.12,"judgment":"forgot"}` |
+| 総合判断だけ | `?fields=judgment` | `{"p_ok":0.12,"judgment":"ng"}` |
 | 総合判断の確率だけ | `?fields=confidence` | `{"p_ok":0.12,"confidence":0.88}` |
-| 両方 | `?fields=judgment,confidence` | `{"p_ok":0.12,"judgment":"forgot","confidence":0.88}` |
+| 両方 | `?fields=judgment,confidence` | `{"p_ok":0.12,"judgment":"ng","confidence":0.88}` |
 
 - 選べる項目は `judgment`、`confidence`、`render`、`classes` です（例 `?fields=render,classes`）。`per_model` と `detect` を取得するには `fields` を省略し、`detail=1` を指定します。
 - 項目の並びは、指定した順に関わらず固定です（`p_ok`、`judgment`、`confidence`、`render`、`classes`）。重複は 1 つにまとめます。
@@ -240,7 +240,7 @@ curl http://<サーバーのIP>:8790/healthz
 | `none` | 対象が写っていない |
 | `processed` | 対象が十分に処理されている |
 | `forgot` | 対象が未処理、または範囲・粗さ・濃さなどが不足して読み取れる |
-| `nori` | 黒い帯・枠・塗りで隠している |
+| `nori` | 黒い・白い帯、線、枠、塗りで隠している（白線・白抜きも含む） |
 
 モデルの出力を描画ごとに統合し、`okMass = P(none) + P(processed)`、`ngMass = max(P(forgot), P(nori))` を求めます。`q = ngMass / (okMass + ngMass)` を Platt 較正し、`p_ok = 1 - cal(q)` とします。[確率の設計](docs/design.md)
 

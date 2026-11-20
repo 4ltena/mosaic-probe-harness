@@ -640,8 +640,8 @@ describe('e2e: 切断と MCP の上限', () => {
   })
 })
 
-type DetailBody = { p_ok: number; judgment: string; confidence: number; render: string; classes: Record<'ok' | 'forgot' | 'nori', number>; per_model: Record<string, Probs4>; detect?: unknown }
-const CLASS_KEYS = ['forgot', 'nori', 'ok']
+type DetailBody = { p_ok: number; judgment: string; confidence: number; render: string; classes: Record<'ok' | 'ng', number>; per_model: Record<string, Record<'ok' | 'ng', number>>; detect?: unknown }
+const CLASS_KEYS = ['ng', 'ok']
 
 async function postDetail(url: string, bytes: Uint8Array, mime: string, query = 'detail=1') {
   return fetch(`${url}/v1/check?${query}`, {
@@ -661,15 +661,17 @@ describe('e2e: 詳細（detail）', () => {
     expect(res.headers.get('content-type')).toContain('application/json')
     const body = JSON.parse(text) as DetailBody
     expect(Object.keys(body).sort()).toEqual(['classes', 'confidence', 'judgment', 'p_ok', 'per_model', 'render'])
-    expect(body.judgment).toBe('forgot')
+    expect(body.judgment).toBe('ng')
     expect(body.confidence).toBeCloseTo(0.95, 6)
     expect(Object.keys(body.classes).sort()).toEqual([...CLASS_KEYS].sort())
     expect(body.p_ok).toBeCloseTo(P_NG, 6)
     expect(body.render).toBe('ラスター')
-    expect(body.classes.forgot).toBeCloseTo(0.95, 6)
-    expect(body.classes.nori).toBeCloseTo(0.02, 6)
+    expect(body.classes.ng).toBeCloseTo(0.95, 6)
     expect(body.classes.ok).toBeCloseTo(0.03, 6)
-    expect(body.per_model.default?.none).toBeCloseTo(0.01, 6)
+    // モデル別も ok / ng の 2 つだけ（内部の 4 語は返さない）
+    expect(Object.keys(body.per_model.default ?? {}).sort()).toEqual([...CLASS_KEYS].sort())
+    expect(body.per_model.default?.ok).toBeCloseTo(0.03, 6)
+    expect(body.per_model.default?.ng).toBeCloseTo(0.95, 6)
     expect(lines.join('\n')).not.toContain(KEY)
   })
 
@@ -681,7 +683,7 @@ describe('e2e: 詳細（detail）', () => {
     expect(res.status).toBe(200)
     expect(body.render).toBe('モザイク名のレイヤーを非表示')
     expect(body.p_ok).toBeCloseTo(P_NG, 6)
-    expect(body.classes.forgot).toBeCloseTo(0.95, 6)
+    expect(body.classes.ng).toBeCloseTo(0.95, 6)
   })
 
   it('detail=true も詳細を返し、既定（detail 無し・detail=0）は数値だけのまま', async () => {
@@ -705,14 +707,14 @@ describe('e2e: 詳細（detail）', () => {
     }
   })
 
-  it('黒い枠（ノリ）は nori として NG 側に入る', async () => {
+  it('黒い枠（ノリ）は ng として NG 側に入る', async () => {
     const fake = await startFake()
     const { url } = await startHarness(fake)
     const res = await postDetail(url, await pngOf('#000000'), 'image/png')
     const body = await res.json() as DetailBody
-    expect(body.judgment).toBe('nori')
+    expect(body.judgment).toBe('ng')
     expect(body.p_ok).toBeCloseTo(P_NG, 6)
-    expect(body.classes.nori).toBeCloseTo(0.95, 6)
+    expect(body.classes.ng).toBeCloseTo(0.95, 6)
     expect(body.classes.ok).toBeCloseTo(0.03, 6)
   })
 
@@ -733,7 +735,7 @@ describe('e2e: 詳細（detail）', () => {
       const body = JSON.parse(content[0]?.text ?? '') as DetailBody
       expect(body.p_ok).toBeCloseTo(P_NG, 6)
       expect(body.render).toBe('ラスター')
-      expect(body.classes.forgot).toBeCloseTo(0.95, 6)
+      expect(body.classes.ng).toBeCloseTo(0.95, 6)
     } finally {
       await client.close()
     }
@@ -780,7 +782,7 @@ describe('e2e: fields の 3 パターン（judgment のみ / confidence のみ /
 
     const only = await get('fields=judgment')
     expect(Object.keys(only)).toEqual(['p_ok', 'judgment'])
-    expect(only.judgment).toBe('forgot')
+    expect(only.judgment).toBe('ng')
 
     const conf = await get('fields=confidence')
     expect(Object.keys(conf)).toEqual(['p_ok', 'confidence'])
@@ -788,7 +790,7 @@ describe('e2e: fields の 3 パターン（judgment のみ / confidence のみ /
 
     const both = await get('fields=judgment,confidence')
     expect(Object.keys(both)).toEqual(['p_ok', 'judgment', 'confidence'])
-    expect(both.judgment).toBe('forgot')
+    expect(both.judgment).toBe('ng')
     expect(both.confidence as number).toBeCloseTo(0.95, 6)
     // p_ok は 3 パターンとも同じ値
     expect(only.p_ok).toBe(conf.p_ok)
@@ -823,10 +825,10 @@ describe('e2e: v1.1 のモデル統合とアニメーション', () => {
     const body = await response.json() as DetailBody
     // OK は 1.0/3、forgot は 0.5/3、nori は 1.5/3。
     expect(body.p_ok).toBeCloseTo(0.4)
-    expect(body.judgment).toBe('nori')
+    expect(body.judgment).toBe('ng')
     expect(body.confidence).toBeCloseTo(0.5)
-    expect(body.per_model.x?.forgot).toBeCloseTo(0.3)
-    expect(body.per_model.y?.nori).toBeCloseTo(0.7)
+    expect(body.per_model.x).toEqual({ ok: expect.closeTo(0.6), ng: expect.closeTo(0.3) })
+    expect(body.per_model.y).toEqual({ ok: expect.closeTo(0.2), ng: expect.closeTo(0.7) })
     expect([first.judgeCalls, second.judgeCalls]).toEqual([1, 1])
 
     second.mode = 'error'
@@ -893,7 +895,7 @@ describe('e2e: 前段の検出（DETECT=1、偽の検出器と本物の切り出
     const body = JSON.parse(await res.text()) as DetailBody
     expect(res.status).toBe(200)
     expect(body.p_ok).toBeCloseTo(P_NG, 6)
-    expect(body.judgment).toBe('forgot')
+    expect(body.judgment).toBe('ng')
     // ラスターの PNG の描画名は「ラスター」（PSD の合成なら「見えているとおり」）
     expect(body.render).toBe('ラスターの切り出し 1')
     expect(fake.judgeCalls).toBe(2)

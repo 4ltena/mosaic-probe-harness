@@ -101,12 +101,13 @@ describe('summarize', () => {
 describe('kindConfusion', () => {
   it('期待した種類 × 最悪の描画の総合判断を数える', () => {
     expect(kindConfusion([
-      { kind: 'forgot', judgment: 'forgot' },
-      { kind: 'forgot', judgment: 'nori' },
+      { kind: 'forgot', judgment: 'ng' },
+      { kind: 'nori', judgment: 'ng' },
       { kind: 'none', judgment: 'ok' },
       { kind: 'ok', judgment: 'ok' },
     ])).toEqual({
-      forgot: { forgot: 1, nori: 1 },
+      forgot: { ng: 1 },
+      nori: { ng: 1 },
       none: { ok: 1 },
       ok: { ok: 1 },
     })

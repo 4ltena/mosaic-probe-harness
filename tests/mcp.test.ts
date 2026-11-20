@@ -115,19 +115,19 @@ describe('mcp', () => {
 
 const DETAIL: Detail = {
   pOk: 0.12,
-  judgment: 'forgot',
+  judgment: 'ng',
   confidence: 0.82,
   render: 'モザイク名のレイヤーを非表示',
-  classes: { ok: 0.11, forgot: 0.82, nori: 0.07 },
+  classes: { ok: 0.11, ng: 0.82 },
   perModel: { default: { none: 0.01, processed: 0.1, forgot: 0.82, nori: 0.07 } },
 }
 const DETAIL_BODY = {
   p_ok: 0.12,
-  judgment: 'forgot',
+  judgment: 'ng',
   confidence: 0.82,
   render: 'モザイク名のレイヤーを非表示',
-  classes: { ok: 0.11, forgot: 0.82, nori: 0.07 },
-  per_model: DETAIL.perModel,
+  classes: { ok: 0.11, ng: 0.82 },
+  per_model: { default: { ok: 0.11, ng: 0.82 } },
 }
 
 describe('mcp detail', () => {
@@ -212,7 +212,7 @@ describe('mcp fields（返す項目の選択）', () => {
     const result = await call({ fields: ['judgment'] })
     expect(result.isError).toBeFalsy()
     const body = JSON.parse(textOf(result))
-    expect(body).toEqual({ p_ok: 0.12, judgment: 'forgot' })
+    expect(body).toEqual({ p_ok: 0.12, judgment: 'ng' })
     expect(Object.keys(body)).toEqual(['p_ok', 'judgment'])
   })
 
@@ -237,7 +237,7 @@ describe('mcp fields（返す項目の選択）', () => {
     ])
     expect(JSON.parse(textOf(await call({ detail: true, fields: ['judgment'] })))).toEqual({
       p_ok: 0.12,
-      judgment: 'forgot',
+      judgment: 'ng',
     })
   })
 

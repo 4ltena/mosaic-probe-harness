@@ -286,19 +286,19 @@ describe('createHttpServer', () => {
 
 const DETAIL: Detail = {
   pOk: 0.12,
-  judgment: 'forgot',
+  judgment: 'ng',
   confidence: 0.82,
   render: 'モザイク名のレイヤーを非表示',
-  classes: { ok: 0.11, forgot: 0.82, nori: 0.07 },
+  classes: { ok: 0.11, ng: 0.82 },
   perModel: { default: { none: 0.01, processed: 0.1, forgot: 0.82, nori: 0.07 } },
 }
 const DETAIL_BODY = {
   p_ok: 0.12,
-  judgment: 'forgot',
+  judgment: 'ng',
   confidence: 0.82,
   render: 'モザイク名のレイヤーを非表示',
-  classes: { ok: 0.11, forgot: 0.82, nori: 0.07 },
-  per_model: DETAIL.perModel,
+  classes: { ok: 0.11, ng: 0.82 },
+  per_model: { default: { ok: 0.11, ng: 0.82 } },
 }
 
 const BOX = { x0: 0, y0: 10, x1: 32, y1: 64, label: 'penis', score: 0.9 }
@@ -390,8 +390,8 @@ describe('createHttpServer detail', () => {
     const bads: Detail[] = [
       { ...DETAIL, pOk: 1.5 },
       { ...DETAIL, pOk: NaN },
-      { ...DETAIL, classes: { ...DETAIL.classes, forgot: -0.1 } },
-      { ...DETAIL, classes: { ...DETAIL.classes, nori: Infinity } },
+      { ...DETAIL, classes: { ...DETAIL.classes, ng: -0.1 } },
+      { ...DETAIL, classes: { ...DETAIL.classes, ok: Infinity } },
       { ...DETAIL, confidence: 1.5 },
       { ...DETAIL, judgment: 'unknown' as Detail['judgment'] },
       { ...DETAIL, detect: { width: 64, height: 64, boxes: [{ ...BOX, x1: 65 }] } },
@@ -454,7 +454,7 @@ describe('createHttpServer fields（返す項目の選択）', () => {
     const { r } = await post('fields=judgment')
     expect(r.status).toBe(200)
     const body = await r.json()
-    expect(body).toEqual({ p_ok: 0.12, judgment: 'forgot' })
+    expect(body).toEqual({ p_ok: 0.12, judgment: 'ng' })
     expect(Object.keys(body)).toEqual(['p_ok', 'judgment'])
   })
 
@@ -471,7 +471,7 @@ describe('createHttpServer fields（返す項目の選択）', () => {
       const { r } = await post(q)
       const body = await r.json()
       expect(r.status).toBe(200)
-      expect(body).toEqual({ p_ok: 0.12, judgment: 'forgot', confidence: 0.82 })
+      expect(body).toEqual({ p_ok: 0.12, judgment: 'ng', confidence: 0.82 })
       expect(Object.keys(body)).toEqual(['p_ok', 'judgment', 'confidence'])
     }
   })
@@ -485,7 +485,7 @@ describe('createHttpServer fields（返す項目の選択）', () => {
 
   it('fields と detail=1 を併記したら fields が優先', async () => {
     const { r } = await post('detail=1&fields=judgment')
-    expect(await r.json()).toEqual({ p_ok: 0.12, judgment: 'forgot' })
+    expect(await r.json()).toEqual({ p_ok: 0.12, judgment: 'ng' })
   })
 
   it('不正な fields は 400（黙って捨てない）で、判定は呼ばれない', async () => {

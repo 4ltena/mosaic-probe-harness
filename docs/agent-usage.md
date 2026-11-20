@@ -29,7 +29,7 @@ Content-Type: application/octet-stream
 0.8732
 ```
 
-既定の応答は数値 1 個だけです。問題の種類（かけ忘れ・処理不足、ノリ）が必要なときだけ、クエリに `detail=1` を付けます（`detail=true` も可。`detail=0` や無指定は数値のみ）。
+既定の応答は数値 1 個だけです。総合判断（`ok` か `ng`）や確率の内訳が必要なときだけ、クエリに `detail=1` を付けます（`detail=true` も可。`detail=0` や無指定は数値のみ）。
 
 ```http
 POST {BASE}/v1/check?detail=1
@@ -38,24 +38,24 @@ POST {BASE}/v1/check?detail=1
 成功時のレスポンス（`200 OK`、`application/json`）:
 
 ```json
-{"p_ok":0.12,"judgment":"forgot","confidence":0.88,"render":"モザイク名のレイヤーを非表示","classes":{"ok":0.12,"forgot":0.88,"nori":0},"per_model":{"default":{"none":0.02,"processed":0.1,"forgot":0.88,"nori":0}}}
+{"p_ok":0.12,"judgment":"ng","confidence":0.88,"render":"モザイク名のレイヤーを非表示","classes":{"ok":0.12,"ng":0.88},"per_model":{"default":{"ok":0.12,"ng":0.88}}}
 ```
 
 - `p_ok` は全描画の最小値です。較正を設定している場合は適用済みです。
-- `judgment` は `ok`、`forgot`、`nori` のいずれかです。`ok` の確率と NG 側で最大の確率を比較し、同率なら `ok` を選びます。NG の種類が同率なら `forgot` を選びます。
+- `judgment` は `ok` か `ng` です。`ok` の確率と NG 側の確率（かけ忘れ・処理不足とノリのうち大きい方）を比較し、同率なら `ok` を選びます。NG の種類は返しません。
 - `confidence` は選ばれた `judgment` の較正前の確率です。
 - `render` は `p_ok` が最小だった描画です。アニメーションでは「フレーム 4/12」のように表示します。運用者が前段の検出を有効にしている場合は、「見えているとおりの切り出し 2」（PSD の例）や「ラスターの切り出し 1」のように、描画の一部の切り出しを指すことがあります（切り出しの `render` も、判定結果として普通に扱ってください）。
-- `classes` はその描画の統合済みの確率です。`ok` は対象なしと処理済みの合計、`forgot` はかけ忘れ・処理不足、`nori` は黒い帯や枠による処理です。
-- `per_model` はその描画のモデル別の4語の確率です。キーは `JUDGES` の `name` です。
+- `classes` はその描画の統合済みの確率です。`ok` は対象なしと処理済みの合計、`ng` はかけ忘れ・処理不足とノリ（黒や白の帯・線・塗りで隠したもの）のうち大きい方です。
+- `per_model` はその描画のモデル別の `ok`・`ng` で、`classes` と同じ式でまとめた値です。キーは `JUDGES` の `name` です。
 - 前段の検出が有効なら `detect`（画風の分類と検出の箱）も付きます。目視の確認用の補助の情報です。判定には `p_ok` と `judgment` を使ってください。
 
 必要な項目だけを返させるには、`detail` の代わりに `fields`（カンマ区切り）を付けます。`p_ok` は常に含まれます。
 
 | 欲しいもの | クエリ | 応答 |
 |---|---|---|
-| 総合判断だけ | `?fields=judgment` | `{"p_ok":0.12,"judgment":"forgot"}` |
+| 総合判断だけ | `?fields=judgment` | `{"p_ok":0.12,"judgment":"ng"}` |
 | その確率だけ | `?fields=confidence` | `{"p_ok":0.12,"confidence":0.88}` |
-| 両方 | `?fields=judgment,confidence` | `{"p_ok":0.12,"judgment":"forgot","confidence":0.88}` |
+| 両方 | `?fields=judgment,confidence` | `{"p_ok":0.12,"judgment":"ng","confidence":0.88}` |
 
 選べる項目は `judgment`、`confidence`、`render`、`classes` です。`per_model` と `detect` は `detail` で取得できます。**未知の項目や空の指定は `400` で、数値は返りません**（打ち間違いを黙って許さないため）。この場合は、補完せずに「判定不能」として報告してください。
 
