@@ -2,6 +2,20 @@
 
 実機（Mac Studio など）で、動作前提の確認・判定基準の同期・評価・較正を行う手順です。評価と調整は**最大 3 回**までを目安にし、届かなければ設定の微調整を続けず方式を見直してください。
 
+## 目次
+
+- [0. 合格目標（暫定の目安）](#0-合格目標暫定の目安)
+- [1. 取得と起動](#1-取得と起動)
+- [2. 動作前提の確認（スパイク）](#2-動作前提の確認スパイク)
+- [3. 判定基準の同期（DocBase → `rules.local.md`）](#3-判定基準の同期docbase--ruleslocalmd)
+- [4. 評価データ](#4-評価データ)
+- [5. 評価と較正](#5-評価と較正)
+- [6. 調整のつまみ](#6-調整のつまみ)
+- [7. 複数台（任意）](#7-複数台任意)
+- [8. 前段の画風分類・部位検出と切り出し判定（任意・既定オフ）](#8-前段の画風分類部位検出と切り出し判定任意既定オフ)
+- [9. 完了と記録](#9-完了と記録)
+- [公開前の注意](#公開前の注意)
+
 ## 0. 合格目標（暫定の目安）
 
 評価データ（NG 30 枚・OK 30 枚・対象なし 10 枚・攻撃画像 5 枚以上）で次を満たすこと。
@@ -28,7 +42,9 @@ npx tsx scripts/spike.ts --base-url http://127.0.0.1:8080 \
   --model <llama-server に表示されるモデル名> --image <テスト画像のパス>
 ```
 
-認証が必要な場合は `VLM_API_KEY` を設定してください。`--rules <パス>` を指定すると判定基準を差し替えられます。採用するモデルと配備先ごとに実行し、対象なし・処理済み・問題ありのサンプルを比較してください。モデルの実測結果は未記録です。
+- **認証が必要な場合**: 環境変数 `VLM_API_KEY` を設定してください。
+- **判定基準の差し替え**: `--rules <パス>` を指定すると判定基準を差し替えられます。
+- **実機確認**: 採用するモデルと配備先ごとに実行し、対象なし・処理済み・問題ありのサンプルを比較してください（モデルの実測結果は未記録です）。
 
 ## 3. 判定基準の同期（DocBase → `rules.local.md`）
 
@@ -69,7 +85,12 @@ npx tsx eval/run_eval.ts --labels eval/labels.csv --images eval/images
 - `eval/results.jsonl` にはファイル名、ラベル、最悪の描画、統合後の較正前 `q`、`p_ok`、総合判断、`classes`、`per_model` を保存します（Git 管理外）。評価では一次判定を使います。
 - 推奨しきい値は表示と記録用の文面だけで、サーバーには自動で入りません。
 
-較正を書き出すには `--write` を付けます。統合後の `q` と、`ok`・`none` 対 `ng`・`forgot`・`nori` の2値から学習し、`calibration.json`（`{version: "v1.1", a, b}`、Git 管理外）に保存します。旧式のファイルは恒等較正として扱います。JPEG での評価に基づく較正やしきい値を使っていた場合は、現在の PNG 入力で評価し直してください。作り直した較正は別の画像で確認してください。
+較正を書き出すには `--write` を付けます。
+
+- **学習と保存先**: 統合後の `q` と、2 値（`ok`・`none` 対 `ng`・`forgot`・`nori`）から学習し、`calibration.json`（`{version: "v1.1", a, b}`、Git 管理外）に保存します。
+- **旧式ファイルの扱い**: 旧式の `calibration.json` は恒等較正として扱います。
+- **入力形式の変更に伴う再評価**: JPEG での評価に基づく較正やしきい値を使っていた場合は、現在の PNG 入力で評価し直してください。
+- **検証**: 作り直した較正は、学習に使ったものとは別の画像で確認してください。
 
 ## 6. 調整のつまみ
 
@@ -116,17 +137,26 @@ export JUDGES='[
 | 画風の分類器 | `deepghs/anime_real_cls` `097a6c1e9e62866a435810c883a45a7cb2c7077d` | `mobilenetv3_v1.4_dist/model.onnx` | 16,821,153 | `c02d68cc7f56dbcbcd4f41a10df190385c1f963f22c4eefb8d162869800ed3b0` |
 | 写真用の検出器（変換元の重み） | `erax-ai/EraX-Anti-NSFW-V1.1` `90878ab981060833413ae1a24df72f5e1fff66bc` | `erax-anti-nsfw-yolo11m-v1.1.pt` | — | `5ec24336b34c2bc8ba7fab6731a260dce55de26e5db87da2b80fd1fea09b1ec8` |
 
+**macOS / Linux:**
+
 ```sh
 mkdir -p models
-curl -L -o models/anime_det.onnx   https://huggingface.co/deepghs/anime_censor_detection/resolve/0cf62fd6b28213b40ae0c0055f92e7ae6a96bdc2/censor_detect_v1.0_s/model.onnx
-curl -L -o models/style.onnx   https://huggingface.co/deepghs/anime_real_cls/resolve/097a6c1e9e62866a435810c883a45a7cb2c7077d/mobilenetv3_v1.4_dist/model.onnx
-curl -L -o models/erax-anti-nsfw-yolo11m-v1.1.pt   https://huggingface.co/erax-ai/EraX-Anti-NSFW-V1.1/resolve/90878ab981060833413ae1a24df72f5e1fff66bc/erax-anti-nsfw-yolo11m-v1.1.pt
-shasum -a 256 models/*   # Windows: certutil -hashfile <ファイル> SHA256
+curl -L -o models/anime_det.onnx \
+  https://huggingface.co/deepghs/anime_censor_detection/resolve/0cf62fd6b28213b40ae0c0055f92e7ae6a96bdc2/censor_detect_v1.0_s/model.onnx
+curl -L -o models/style.onnx \
+  https://huggingface.co/deepghs/anime_real_cls/resolve/097a6c1e9e62866a435810c883a45a7cb2c7077d/mobilenetv3_v1.4_dist/model.onnx
+curl -L -o models/erax-anti-nsfw-yolo11m-v1.1.pt \
+  https://huggingface.co/erax-ai/EraX-Anti-NSFW-V1.1/resolve/90878ab981060833413ae1a24df72f5e1fff66bc/erax-anti-nsfw-yolo11m-v1.1.pt
+shasum -a 256 models/*
 ```
 
-- Windows の PowerShell では、`curl` が別のコマンド（`Invoke-WebRequest` の別名）なので `curl.exe` を使い、`mkdir -p models` の代わりに `New-Item -ItemType Directory -Force models` を使います。SHA-256 は上の `certutil` で確かめます。
+**Windows (PowerShell):**
+
+- `curl` は `Invoke-WebRequest` の別名のため `curl.exe` を、`mkdir -p models` の代わりに `New-Item -ItemType Directory -Force models` を使用してください。
+- SHA-256 の照合には `certutil -hashfile <ファイル> SHA256` を使用してください。
+
 - イラスト用の検出器の入力は動的な形で、付属情報に `imgsz` がないため、`stretch` で 640×640 に引き伸ばして使います。クラスは `nipple_f`・`penis`・`pussy`、対象は `penis`・`pussy` です。
-- 画風の分類器の入力は `input` [1,3,384,384]、出力は [1,2] で、ラベルは `anime`・`real`（リポジトリの `meta.json` の順）です。
+- 画風の分類器の入力は `input` `[1,3,384,384]`、出力は `[1,2]` で、ラベルは `anime`・`real`（リポジトリの `meta.json` の順）です。
 
 ### 8.2 写真用の検出器の変換（EraX の重みから ONNX へ）
 
@@ -155,11 +185,21 @@ STYLE_MODEL=models/style.onnx
 STYLE_SHA256=c02d68cc7f56dbcbcd4f41a10df190385c1f963f22c4eefb8d162869800ed3b0
 ```
 
-検出器を 1 つだけ使う場合は `STYLE_MODEL` を設定せず、その検出器を常に使います。起動時に、ファイル・SHA-256・クラス名・試しの推論を検査し、失敗したら変数名を示して止まります（パスと値は出しません）。評価 CLI（`eval/run_eval.ts`）も同じ設定で動きます。`onnxruntime-node` の install スクリプトは、linux/x64 では CUDA 向けのパッケージを取得します。linux/x64 で取得されるものは、ハッシュで照合されません。**`DETECT` を使わない配置では、`ONNXRUNTIME_NODE_INSTALL=skip` を推奨します**。取得を止めるには、環境変数 `ONNXRUNTIME_NODE_INSTALL=skip`（または npm の設定 `onnxruntime-node-install=skip`）を付けて `npm ci` を実行します。**`npm ci --omit=optional` は使わないでください**（`sharp` のプラットフォーム別のバイナリも入らなくなります）。
+- **検出器を 1 つだけ使う場合**: `STYLE_MODEL` は設定せず、その検出器を常に使います。
+- **起動時の自己検査**: 起動時に、ファイル・SHA-256・クラス名・試しの推論を検査し、失敗したら変数名を示して止まります（パスと値は出しません）。評価 CLI（`eval/run_eval.ts`）も同じ設定で動きます。
+
+> [!WARNING]
+> `onnxruntime-node` の install スクリプトは、linux/x64 では CUDA 向けのパッケージを取得します（linux/x64 で取得されるものはハッシュで照合されません）。
+> - **`DETECT` を使わない配置では、`ONNXRUNTIME_NODE_INSTALL=skip` を推奨します。** 取得を止めるには、環境変数 `ONNXRUNTIME_NODE_INSTALL=skip`（または npm の設定 `onnxruntime-node-install=skip`）を付けて `npm ci` を実行してください。
+> - **`npm ci --omit=optional` は使わないでください。** `sharp` のプラットフォーム別バイナリも入らなくなります。
 
 ### 8.4 判定回数と時間の目安
 
-各描画の判定は、全体の 1 回に加えて切り出しが最大 `DETECT_MAX_CROPS` 回です。1 件の要求の判定回数は、最悪で「描画数 ×（1 + `DETECT_MAX_CROPS`）」になります（既定の `DETECT_MAX_CROPS=4` では、PSD の 32 描画で 160 回、GIF の 100 フレームで 500 回）。これに描画ごとの ONNX の推論（`DETECT_THREADS`）が加わります。**クライアントのタイムアウトと `QUEUE_TIMEOUT_S` を見直してください**。時間は実測で確かめ、重いときは `DETECT_MAX_CROPS` を下げます。
+各描画の判定は、全体の 1 回に加えて切り出しが最大 `DETECT_MAX_CROPS` 回です。
+
+- **最悪の判定回数**: `描画数 ×（1 + DETECT_MAX_CROPS）` 回（既定の `DETECT_MAX_CROPS=4` では、PSD の 32 描画で 160 回、GIF の 100 フレームで 500 回）。
+- **追加の負荷**: これに描画ごとの ONNX 推論（`DETECT_THREADS`）が加わります。
+- **推奨対応**: **クライアントのタイムアウトと `QUEUE_TIMEOUT_S` を見直してください**。時間は実測で確かめ、重いときは `DETECT_MAX_CROPS` を下げます。
 
 M5 の実測（Mac mini M6、32 GB。判定器は Qwen3.8-27B）です。
 
@@ -170,7 +210,7 @@ M5 の実測（Mac mini M6、32 GB。判定器は Qwen3.8-27B）です。
 
 #### 前処理の既知の差
 
-- `letterbox`（写真用）のスコアは、参照（Ultralytics、cv2 の `INTER_LINEAR`）と最大 0.05 程度ずれうります（M5 の実測は 0.0498）。
+- `letterbox`（写真用）のスコアは、参照（Ultralytics、cv2 の `INTER_LINEAR`）と最大 0.05 程度ずれることがあります（M5 の実測は 0.0498）。
 - `stretch` で 640 へ拡大する画像は、参照との一致を確かめていません。
 - しきい値（`DETECT_*_THRESHOLD`）を詰めるときは、この差の分の余裕を持たせてください。
 
@@ -191,9 +231,9 @@ M5 の実測（Mac mini M6、32 GB。判定器は Qwen3.8-27B）です。
 
 ## 9. 完了と記録
 
-- 完了: 0 の目標を、3 回以内の評価で満たしたとき。
-- 未達: 結果の数値（件数・ECE だけ。画像は含めない）を添えて、プロンプトや推論方式の見直しを検討します。
-- 記録: 数値結果は `docs/eval-log.md` などに残します（画像・機密は書かない）。
+- **完了**: 「0. 合格目標」の基準を、3 回以内の評価で満たしたとき。
+- **未達**: 結果の数値（件数・ECE だけ。画像は含めない）を添えて、プロンプトや推論方式の見直しを検討します。
+- **記録**: 数値結果は `docs/eval-log.md` などに残します（画像・機密は書かない）。
 
 ## 公開前の注意
 

@@ -4,15 +4,22 @@
 
 ### 新機能: 前段の画風分類・部位検出と切り出し判定（任意・既定オフ）
 
-`DETECT=1` で、画風（写真かイラストか）に合った検出器（ONNX、`onnxruntime-node`）で部位を見つけ、その切り出しも全体と同じ判定器で判定します。全体と切り出しのうち最も悪い候補を採るため、`p_ok` は `DETECT=0` の値以下になります。切り出しが最悪のときは、`render` が「…の切り出し k」になります。`detail=1`（`fields` なし）の応答には `detect` が付き、選ばれた候補の描画の画風の分類（`style`、`p_real`）と検出の箱（`boxes`、座標の基準の `width`・`height`）を返します。既定の応答と `fields` の形は変わりません。既定（`DETECT` が空か `0`）では、検出用のモジュールも `onnxruntime-node` も読み込まず、判定は変わりません。設定は [README](README.md)、モデルの取得・変換・ライセンスの注意・判定回数の目安は [docs/operations.md](docs/operations.md) を参照してください。
+`DETECT=1` で、画風（写真かイラストか）に合った検出器（ONNX、`onnxruntime-node`）で部位を見つけ、その切り出しも全体と同じ判定器で判定します。
 
-- 判定回数は最悪で「描画数 ×（1 + `DETECT_MAX_CROPS`）」です（PSD の 32 描画で 160 回、GIF の 100 フレームで 500 回）。クライアントのタイムアウトと `QUEUE_TIMEOUT_S` を見直してください。
-- `DETECT=1` で `--write` した `calibration.json` は `DETECT=1` 用です。`DETECT=0` に戻すときは、以前のファイルに戻すか削除してください。
-- `onnxruntime-node`（1.31.1）は `optionalDependencies` です。
+- **判定の挙動**: 全体と切り出しのうち最も悪い候補を採用するため、`p_ok` は `DETECT=0` の値以下になります。切り出しが最悪のときは、`render` が「…の切り出し k」になります。
+- **応答形式**: 既定の応答と `fields` の形は変わりません。`detail=1`（`fields` なし）の応答には `detect` が付き、選ばれた候補の描画の画風分類（`style`、`p_real`）と検出の箱（`boxes`、座標の基準の `width`・`height`）を返します。
+- **既定（オフ）時の動作**: `DETECT` が空か `0` の場合、検出用モジュールも `onnxruntime-node` も読み込まず、判定は変わりません。
+- **判定回数とタイムアウト**: 判定回数は最悪で「描画数 ×（1 + `DETECT_MAX_CROPS`）」です（PSD の 32 描画で 160 回、GIF の 100 フレームで 500 回）。クライアントのタイムアウトと `QUEUE_TIMEOUT_S` を見直してください。
+- **較正の分離**: `DETECT=1` で `--write` した `calibration.json` は `DETECT=1` 用です。`DETECT=0` に戻すときは、以前のファイルに戻すか削除してください。
+- **依存関係**: `onnxruntime-node`（1.31.1）は `optionalDependencies` です。
+
+設定は [README](README.md)、モデルの取得・変換・ライセンスの注意・判定回数の目安は [docs/operations.md](docs/operations.md) を参照してください。
 
 ### 総合判断は `ok`・`ng` の 2 値に
 
-`detail` の `judgment` は `ok` か `ng` になります（以前は `ok`・`forgot`・`nori`）。`classes` は `{"ok", "ng"}`（`ng` は `forgot` と `nori` の大きい方）、`per_model` もモデルごとの `{"ok", "ng"}` になり、4 語の確率は返しません。判定の式と `p_ok` は変わりません。`judgment` の `forgot`・`nori` や `classes.forgot` を読んでいる呼び出し側は直してください。
+- `detail` の `judgment` は `ok` か `ng` になります（以前は `ok`・`forgot`・`nori`）。
+- `classes` は `{"ok", "ng"}`（`ng` は `forgot` と `nori` の大きい方）、`per_model` もモデルごとの `{"ok", "ng"}` になり、4 語の確率は返しません。
+- 判定の式と `p_ok` は変わりません。`judgment` の `forgot`・`nori` や `classes.forgot` を読んでいる呼び出し側は修正してください。
 
 ### ノリに白線を含める
 
@@ -54,7 +61,7 @@
 | PSD の描画上限 | 既定8件で候補を切り捨て | 既定32件以下なら全候補を判定。超過は REST `413 too_large`、MCP ツールエラー。両方で必要件数と上限を取得可能 |
 | モデルへの画像入力 | JPEG | 減色なしの8bit RGB PNG。通常判定・切り出し再判定ともに PNG を使用 |
 
-APNG は未対応形式として扱います。REST は `415 unsupported`、MCP はツールエラーを返します。フル詳細に `fields` を併記すると `fields` が優先されます。[API 仕様](README.md#api-仕様)
+APNG は未対応形式として扱います。REST は `415 unsupported`、MCP はツールエラーを返します。`detail=1` に `fields` を併記すると `fields` が優先されます。[API 仕様](README.md#api-仕様)
 
 ### 設定と移行
 
