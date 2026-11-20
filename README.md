@@ -1,7 +1,23 @@
-# mosaic-probe-harness
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/mosaic-probe-banner-white.svg">
+    <img src="docs/assets/mosaic-probe-banner-ink.svg" alt="mosaic-probe-harness" width="800">
+  </picture>
+</p>
 
 <p align="center">
-  <a href="https://github.com/4ltena/mosaic-probe-harness/releases/tag/v1.3.0"><strong>v1.3.0</strong></a> · <a href="CHANGELOG.md">変更履歴</a>
+  <a href="https://github.com/4ltena/mosaic-probe-harness/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/4ltena/mosaic-probe-harness?style=for-the-badge&labelColor=182D36&color=35505B"></a>
+  <img alt="Node.js 22.19+" src="https://img.shields.io/badge/Node.js-22.19%2B-35505B?style=for-the-badge&labelColor=182D36&logo=nodedotjs&logoColor=white">
+  <img alt="Inference llama.cpp" src="https://img.shields.io/badge/Inference-llama.cpp-35505B?style=for-the-badge&labelColor=182D36">
+  <a href="#api-仕様"><img alt="API MCP and REST" src="https://img.shields.io/badge/API-MCP%20%2F%20REST-35505B?style=for-the-badge&labelColor=182D36&logo=modelcontextprotocol&logoColor=white"></a>
+  <a href="LICENSE"><img alt="License MIT" src="https://img.shields.io/github/license/4ltena/mosaic-probe-harness?style=for-the-badge&labelColor=182D36&color=35505B"></a>
+  <a href="docs"><img alt="Docs" src="https://img.shields.io/badge/Docs-Guide-35505B?style=for-the-badge&labelColor=182D36&logo=readthedocs&logoColor=white"></a>
+  <a href="https://github.com/4ltena/mosaic-probe-harness/commits/main/"><img alt="Last commit" src="https://img.shields.io/github/last-commit/4ltena/mosaic-probe-harness/main?style=for-the-badge&labelColor=182D36&color=35505B"></a>
+  <a href="https://github.com/sponsors/4ltena"><img alt="Sponsor 4ltena" src="https://img.shields.io/badge/Sponsor-4ltena-35505B?style=for-the-badge&labelColor=182D36&logo=githubsponsors&logoColor=white"></a>
+</p>
+
+<p align="center">
+  <strong>ローカル・LAN 向け · パッケージ未公開</strong> · <a href="CHANGELOG.md">変更履歴</a>
 </p>
 
 画像（PSD などのレイヤー付きファイルを含む）を受け取り、**「モザイク処理が必要な部位が存在しない、または十分に処理されている確率（`p_ok`）」**を `0` 〜 `1` の数値 1 個で返すローカル API サーバーです。
