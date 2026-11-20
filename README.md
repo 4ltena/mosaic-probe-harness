@@ -9,6 +9,7 @@
 
 > **関連ドキュメント**
 > - v1.1 の API 差分と移行時の確認項目は [CHANGELOG.md](CHANGELOG.md)
+> - Mac mini の既存ダッシュボード・Health API を使う手順は [Mac mini の状態確認](docs/mac-mini-health.md)
 > - AI エージェント向けの呼び出し仕様・注意事項: [docs/agent-usage.md](docs/agent-usage.md)
 > - 実機での前提確認・ルール同期・評価・較正・複数台の手順: [docs/operations.md](docs/operations.md)
 > - 設計の要点（確率の作り方、Pi の使い方、レイヤー安全）: [docs/design.md](docs/design.md)
