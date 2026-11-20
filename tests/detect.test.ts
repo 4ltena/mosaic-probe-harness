@@ -416,9 +416,11 @@ describe('Detector', () => {
     let current = yolo(3, [])
     const det = await createDetector(one({ detectMaxCrops: 2 }), dir, async () => fakeOrt([], { anime: () => current }))
     current = out
-    const boxes = await det(png)
+    const { boxes } = await det(png)
     expect(boxes.map((b) => [b.label, ...xyxy(b)])).toEqual([['pussy', 200, 200, 250, 250], ['penis', 300, 300, 350, 350]])
     expect(boxes.every((b) => [b.x0, b.y0, b.x1, b.y1].every(Number.isInteger))).toBe(true)
+    // 分類器がなければ画風は返さない
+    expect((await det(png)).style).toBeUndefined()
   })
 
   it('real の確率で振り分ける（≥ HI は写真用、≤ LO はイラスト用、その間は両方）', async () => {
@@ -438,6 +440,11 @@ describe('Detector', () => {
     expect(await runs(0.9)).toEqual(['style', 'photo'])
     expect(await runs(0.25)).toEqual(['style', 'anime'])
     expect(await runs(0.5)).toEqual(['style', 'anime', 'photo'])
+    // 分類の確率と、使った検出器を返す
+    for (const [v, use] of [[0.75, 'photo'], [0.25, 'illust'], [0.5, 'both']] as const) {
+      p = v
+      expect((await det(png)).style).toEqual({ pReal: v, use })
+    }
   })
 
   it('両方を使うと、まとめて NMS をかけ、同点は検出器の順にする', async () => {
@@ -449,11 +456,11 @@ describe('Detector', () => {
     const det = await createDetector(two(), dir, load)
     on = true
     // 写真用の 0.9 が重なるイラスト用の箱を消す。0.6 の同点はイラスト用が先
-    expect((await det(png)).map(xyxy)).toEqual([[102, 100, 202, 200], [300, 300, 350, 350], [500, 500, 550, 550]])
+    expect((await det(png)).boxes.map(xyxy)).toEqual([[102, 100, 202, 200], [300, 300, 350, 350], [500, 500, 550, 550]])
     on = false
     const capped = await createDetector(two({ detectMaxCrops: 2 }), dir, load)
     on = true
-    expect((await capped(png)).map(xyxy)).toEqual([[102, 100, 202, 200], [300, 300, 350, 350]])
+    expect((await capped(png)).boxes.map(xyxy)).toEqual([[102, 100, 202, 200], [300, 300, 350, 350]])
   })
 
   it('(h) 推論の出力に NaN があるか形が違えば internal', async () => {
@@ -469,11 +476,11 @@ describe('Detector', () => {
     const wide = await solid(320, 160, [10, 20, 30])
     // stretch: gx = 2, gy = 4
     const s = await createDetector(one(), dir, async () => fakeOrt([], { anime: () => yolo(3, [{ b: [100, 100, 200, 200], c: 1, s: 0.9 }]) }))
-    expect((await s(wide)).map(xyxy)).toEqual([[50, 25, 100, 50]])
+    expect((await s(wide)).boxes.map(xyxy)).toEqual([[50, 25, 100, 50]])
     // letterbox: r = 2、上に 160 の余白
     const l = await createDetector(one({ detectAnime: animeSpec({ resize: 'letterbox' }) }), dir, async () =>
       fakeOrt([], { anime: () => yolo(3, [{ b: [100, 260, 200, 360], c: 1, s: 0.9 }]) }))
-    expect((await l(wide)).map(xyxy)).toEqual([[50, 50, 100, 100]])
+    expect((await l(wide)).boxes.map(xyxy)).toEqual([[50, 50, 100, 100]])
   })
 
   it('中断されていれば推論しない', async () => {

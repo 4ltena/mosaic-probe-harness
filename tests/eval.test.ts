@@ -126,7 +126,7 @@ describe('評価の組み立て（DETECT=1）', () => {
   const cfgOf = (o: Partial<Config> = {}) => defaultConfig({ detect: true, calibrationPath: join(dir, 'none.json'), ...o })
 
   it('偽の crops を渡すと、判定の流れに配線される', async () => {
-    const crops = vi.fn(async (png: Uint8Array) => [png])
+    const crops = vi.fn(async (png: Uint8Array) => ({ parts: [png], found: { width: 8, height: 8, boxes: [] } }))
     const deps = buildEvalDeps(cfgOf(), crops)
     expect(deps.crops).toBe(crops)
     expect(deps.recheck).toBeUndefined()
@@ -139,7 +139,7 @@ describe('評価の組み立て（DETECT=1）', () => {
   })
 
   it('DETECT=1 で crops がないとき、較正が a ≤ 0 のときは止まる（DETECT=0 なら止まらない）', () => {
-    const crops = async () => []
+    const crops = async () => ({ parts: [], found: { width: 1, height: 1, boxes: [] } })
     expect(() => buildEvalDeps(cfgOf())).toThrow(/DETECT=1/u)
     for (const a of [0, -1]) {
       const path = join(dir, `calibration-${a}.json`)

@@ -46,9 +46,11 @@ describe('buildCrops', () => {
 
   it('検出器の並びのまま、拡大も縮小もせず PNG で切り出す。範囲が全体と同じ箱は除く', async () => {
     const signal = new AbortController().signal
-    const detector = vi.fn<Detector>(async () => [box(50, 0, 100, 50), box(0, 0, 100, 50), box(0, 0, 10, 10), box(100, 0, 100, 10)])
+    const detector = vi.fn<Detector>(async () => ({ boxes: [box(50, 0, 100, 50), box(0, 0, 100, 50), box(0, 0, 10, 10), box(100, 0, 100, 10)] }))
     const src = await png()
-    const out = await buildCrops(cfg, detector)(src, signal)
+    const { parts: out, found } = await buildCrops(cfg, detector)(src, signal)
+    // found には、切り出さなかった全体の箱も含めて検出器の箱をすべて入れる
+    expect(found).toEqual({ style: undefined, width: 100, height: 50, boxes: (await detector.mock.results[0]!.value).boxes })
     expect(detector).toHaveBeenCalledWith(src, signal)
     expect(out).toHaveLength(3)
     const metas = await Promise.all(out.map((b) => sharp(b).metadata()))
@@ -63,13 +65,15 @@ describe('buildCrops', () => {
   it('寸法を読めない画像（幅 0）は、切り出さずに internal で止まる', async () => {
     const spy = vi.spyOn(Object.getPrototypeOf(sharp()), 'metadata').mockResolvedValueOnce({ width: 0, height: 50 })
     try {
-      await expect(buildCrops(cfg, async () => [box(0, 0, 10, 10)])(await png(), new AbortController().signal)).rejects.toMatchObject({ kind: 'internal' })
+      await expect(buildCrops(cfg, async () => ({ boxes: [box(0, 0, 10, 10)] }))(await png(), new AbortController().signal)).rejects.toMatchObject({ kind: 'internal' })
     } finally {
       spy.mockRestore()
     }
   })
 
-  it('箱がなければ空', async () => {
-    expect(await buildCrops(cfg, async () => [])(await png(), new AbortController().signal)).toEqual([])
+  it('箱がなければ切り出しは空。画風はそのまま渡す', async () => {
+    const style = { pReal: 0.9, use: 'photo' } as const
+    expect(await buildCrops(cfg, async () => ({ style, boxes: [] }))(await png(), new AbortController().signal))
+      .toEqual({ parts: [], found: { style, width: 100, height: 50, boxes: [] } })
   })
 })

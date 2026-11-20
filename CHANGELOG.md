@@ -4,7 +4,7 @@
 
 ### 新機能: 前段の画風分類・部位検出と切り出し判定（任意・既定オフ）
 
-`DETECT=1` で、画風（写真かイラストか）に合った検出器（ONNX、`onnxruntime-node`）で部位を見つけ、その切り出しも全体と同じ判定器で判定します。全体と切り出しのうち最も悪い候補を採るため、`p_ok` は `DETECT=0` の値以下になります。切り出しが最悪のときは、`render` が「…の切り出し k」になります。API の形は変わらず、座標やクラスは返しません。既定（`DETECT` が空か `0`）では、検出用のモジュールも `onnxruntime-node` も読み込まず、判定は変わりません。設定は [README](README.md)、モデルの取得・変換・ライセンスの注意・判定回数の目安は [docs/operations.md](docs/operations.md) を参照してください。
+`DETECT=1` で、画風（写真かイラストか）に合った検出器（ONNX、`onnxruntime-node`）で部位を見つけ、その切り出しも全体と同じ判定器で判定します。全体と切り出しのうち最も悪い候補を採るため、`p_ok` は `DETECT=0` の値以下になります。切り出しが最悪のときは、`render` が「…の切り出し k」になります。`detail=1`（`fields` なし）の応答には `detect` が付き、選ばれた候補の描画の画風の分類（`style`、`p_real`）と検出の箱（`boxes`、座標の基準の `width`・`height`）を返します。既定の応答と `fields` の形は変わりません。既定（`DETECT` が空か `0`）では、検出用のモジュールも `onnxruntime-node` も読み込まず、判定は変わりません。設定は [README](README.md)、モデルの取得・変換・ライセンスの注意・判定回数の目安は [docs/operations.md](docs/operations.md) を参照してください。
 
 - 判定回数は最悪で「描画数 ×（1 + `DETECT_MAX_CROPS`）」です（PSD の 32 描画で 160 回、GIF の 100 フレームで 500 回）。クライアントのタイムアウトと `QUEUE_TIMEOUT_S` を見直してください。
 - `DETECT=1` で `--write` した `calibration.json` は `DETECT=1` 用です。`DETECT=0` に戻すときは、以前のファイルに戻すか削除してください。

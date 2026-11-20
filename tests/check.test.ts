@@ -126,7 +126,8 @@ describe('前段の検出（DETECT=1）', () => {
   /** 描画と切り出しを先頭のバイトで表す。判定器は table[バイト] を返し、crops は描画のバイトから切り出しのバイトを引く。 */
   function setup(table: Probs4[], renders: number[], parts: Record<number, number[]>, overrides: Partial<CheckDeps> = {}) {
     const judge = vi.fn(async (png: Uint8Array) => table[png[0]!]!)
-    const crops = vi.fn(async (png: Uint8Array, _signal: AbortSignal) => (parts[png[0]!] ?? []).map((b) => new Uint8Array([b])))
+    const crops = vi.fn(async (png: Uint8Array, _signal: AbortSignal) =>
+      ({ parts: (parts[png[0]!] ?? []).map((b) => new Uint8Array([b])), found: { width: 1, height: 1, boxes: [] } }))
     const d: CheckDeps = {
       renderVariants: async () => renders.map((b, i) => ({ description: `v${i}`, render: async () => new Uint8Array([b]) })),
       normalize: async (data) => data,
@@ -144,6 +145,23 @@ describe('前段の検出（DETECT=1）', () => {
     expect(judge).toHaveBeenCalledOnce()
     // DETECT=1 でも crops がなければ、今と同じ
     expect((await checkDetail(SRC, on, { ...d, crops: undefined })).render).toBe('v0')
+  })
+
+  it('detect は選ばれた候補（全体でも切り出しでも）の描画の found。DETECT=0 なら無い', async () => {
+    const box = { x0: 0, y0: 0, x1: 1, y1: 1, label: 'penis', score: 0.9 }
+    // found の width で描画を見分ける（描画のバイト + 1）
+    const cropsOf = (parts: Record<number, number[]>) => async (png: Uint8Array) =>
+      ({ parts: (parts[png[0]!] ?? []).map((b) => new Uint8Array([b])), found: { width: png[0]! + 1, height: 1, boxes: [box] } })
+    const table = [probs(0.9), probs(0.1), probs(0.5)]
+    // 全体: 描画 1（バイト 1）が最悪
+    const whole = setup(table, [0, 1], {}, { crops: cropsOf({}) }).d
+    expect((await checkDetail(SRC, on, whole)).detect).toEqual({ width: 2, height: 1, boxes: [box] })
+    expect((await checkDetail(SRC, cfg, whole)).detect).toBeUndefined()
+    // 切り出し: 描画 0 の切り出し（バイト 1）が、描画 1（バイト 2）より悪い
+    const part = setup(table, [0, 2], {}, { crops: cropsOf({ 0: [1] }) }).d
+    const got = await checkDetail(SRC, on, part)
+    expect(got.render).toBe('v0の切り出し 1')
+    expect(got.detect).toEqual({ width: 1, height: 1, boxes: [box] })
   })
 
   it('既定オフ: check.ts は crops.ts も detect.ts も参照せず、src と eval に crops.ts・detect.ts の静的な import がない', () => {
@@ -266,7 +284,7 @@ describe('前段の検出（DETECT=1）', () => {
       const crops = vi.fn(async (_png: Uint8Array, signal: AbortSignal) => {
         ac.abort(reason)
         if (throws) signal.throwIfAborted()
-        return [new Uint8Array([1])]
+        return { parts: [new Uint8Array([1])], found: { width: 1, height: 1, boxes: [] } }
       })
       const { d, judge } = setup([probs(0.9), probs(0.1)], [0, 0], {}, { crops })
       await expect(check(SRC, on, d, ac.signal)).rejects.toBe(reason)

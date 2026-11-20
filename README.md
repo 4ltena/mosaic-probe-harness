@@ -125,9 +125,10 @@ curl -X POST "http://<サーバーのIP>:8790/v1/check?detail=1" \
 - `p_ok` は全描画の最小値です。較正を設定している場合は適用済みです。
 - `judgment` は `ok`、`forgot`、`nori` のいずれかです。`ok` の確率と NG 側で最大の確率を比較し、同率なら `ok` を選びます。NG の種類が同率なら `forgot` を選びます。
 - `confidence` は選ばれた `judgment` の較正前の確率です。
-- `render` は `p_ok` が最小だった描画です。アニメーションでは「フレーム 4/12」のように表示します。`DETECT=1` で切り出しが最悪だったときは、「見えているとおりの切り出し 2」のように、描画名に「の切り出し k」が付きます（PSD の例です。ラスター画像なら「ラスターの切り出し 1」のようになります。座標は返しません）。
+- `render` は `p_ok` が最小だった描画です。アニメーションでは「フレーム 4/12」のように表示します。`DETECT=1` で切り出しが最悪だったときは、「見えているとおりの切り出し 2」のように、描画名に「の切り出し k」が付きます（PSD の例です。ラスター画像なら「ラスターの切り出し 1」のようになります。箱の座標は `detect` に入ります）。
 - `classes` はその描画の統合済みの確率です。`ok` は対象なしと処理済みの合計、`forgot` はかけ忘れ・処理不足、`nori` は黒い帯や枠による処理です。
 - `per_model` はその描画のモデル別の4語の確率です。キーは `JUDGES` の `name` です。
+- `detect` は `DETECT=1` のときだけ付きます。`p_ok` が最小だった候補の描画について、画風の分類と、検出器が見つけた箱を返します。`style` は使った検出器で、`illust`（イラスト用）、`photo`（写真用）、`both`（判別できず両方）のいずれかです。`p_real` は写真である確率です。分類器がなければ、どちらも `null` です。`boxes` の各要素は `label`（クラス名）、`score`、左上の `x0`・`y0`、右下の `x1`・`y1` です。座標は判定に使った描画（`MAX_EDGE` などで縮小したあと）の画素で、その寸法が `width`・`height` です。元の画像に重ねるときは、`width`・`height` との比で拡大してください。切り出さなかった箱（描画全体と同じ範囲）も含みます。
 - 失敗時は、既定の応答と同じエラー（`{"error": …}`）だけを返し、数値も詳細も返しません。
 - `detail` を付けても、判定の内容・時間は変わりません（同じ描画を判定し、結果の表示を増やすだけです）。
 
@@ -141,7 +142,7 @@ curl -X POST "http://<サーバーのIP>:8790/v1/check?detail=1" \
 | 総合判断の確率だけ | `?fields=confidence` | `{"p_ok":0.12,"confidence":0.88}` |
 | 両方 | `?fields=judgment,confidence` | `{"p_ok":0.12,"judgment":"forgot","confidence":0.88}` |
 
-- 選べる項目は `judgment`、`confidence`、`render`、`classes` です（例 `?fields=render,classes`）。`per_model` を取得するには `fields` を省略し、`detail=1` を指定します。
+- 選べる項目は `judgment`、`confidence`、`render`、`classes` です（例 `?fields=render,classes`）。`per_model` と `detect` を取得するには `fields` を省略し、`detail=1` を指定します。
 - 項目の並びは、指定した順に関わらず固定です（`p_ok`、`judgment`、`confidence`、`render`、`classes`）。重複は 1 つにまとめます。
 - `fields` を付けると `detail` は不要です。併記した場合は `fields` が優先されます。
 - **不正な指定は黙って捨てず `400`（`bad_input`）**になり、判定も行いません。空（`fields=`）、未知の項目、空の要素（`fields=judgment,`）が対象です。数値も詳細も返りません。

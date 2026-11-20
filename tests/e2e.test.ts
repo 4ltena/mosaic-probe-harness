@@ -640,7 +640,7 @@ describe('e2e: 切断と MCP の上限', () => {
   })
 })
 
-type DetailBody = { p_ok: number; judgment: string; confidence: number; render: string; classes: Record<'ok' | 'forgot' | 'nori', number>; per_model: Record<string, Probs4> }
+type DetailBody = { p_ok: number; judgment: string; confidence: number; render: string; classes: Record<'ok' | 'forgot' | 'nori', number>; per_model: Record<string, Probs4>; detect?: unknown }
 const CLASS_KEYS = ['forgot', 'nori', 'ok']
 
 async function postDetail(url: string, bytes: Uint8Array, mime: string, query = 'detail=1') {
@@ -884,7 +884,7 @@ describe('e2e: v1.1 のモデル統合とアニメーション', () => {
 describe('e2e: 前段の検出（DETECT=1、偽の検出器と本物の切り出し）', () => {
   const DET: Partial<Config> = { detect: true, detectMargin: 0, detectMinSide: 1 }
   const MARK = '987.654'
-  const quarterBox: Detector = async () => [{ x0: 0, y0: 0, x1: 32, y1: 128, label: 'penis', score: 0.9 }]
+  const quarterBox: Detector = async () => ({ boxes: [{ x0: 0, y0: 0, x1: 32, y1: 128, label: 'penis', score: 0.9 }] })
 
   it('左 1/4 の箱を切り出して判定し、全体が処理済みでも forgot の値と切り出しの render を返す（判定はちょうど 2 回）', async () => {
     const fake = await startFake()
@@ -897,17 +897,22 @@ describe('e2e: 前段の検出（DETECT=1、偽の検出器と本物の切り出
     // ラスターの PNG の描画名は「ラスター」（PSD の合成なら「見えているとおり」）
     expect(body.render).toBe('ラスターの切り出し 1')
     expect(fake.judgeCalls).toBe(2)
+    // 検出の箱と寸法（分類器なし）
+    expect(body.detect).toEqual({ style: null, p_real: null, width: 128, height: 128, boxes: [{ label: 'penis', score: 0.9, x0: 0, y0: 0, x1: 32, y1: 128 }] })
 
-    // DETECT=0 なら同じ画像は処理済み
+    // DETECT=0 なら同じ画像は処理済みで、detect は無い
     const off = await startHarness(fake)
     const plain = await postDetail(off.url, await quarterRedPng(), 'image/png')
-    expect((JSON.parse(await plain.text()) as DetailBody).p_ok).toBeCloseTo(P_OK, 6)
+    const offBody = JSON.parse(await plain.text()) as DetailBody
+    expect(offBody.p_ok).toBeCloseTo(P_OK, 6)
+    expect('detect' in offBody).toBe(false)
   })
 
   it('起動時に 1 行だけ出し、ログには座標もパスも出さない。アクセスログの書式は変わらない', async () => {
     const fake = await startFake()
     const spec = { model: join(tmpdir(), 'PATHMARK', 'anime.onnx'), sha256: undefined, labels: undefined, classes: ['penis'], threshold: 0.3, resize: 'stretch' as const }
-    const marked: Detector = async () => [{ x0: 0, y0: 0, x1: 32, y1: Number(MARK), label: 'penis', score: Number(MARK) / 1000 }]
+    // 座標は応答に返るので、目印はスコア（0.987654）に置く
+    const marked: Detector = async () => ({ boxes: [{ x0: 0, y0: 0, x1: 32, y1: 128, label: 'penis', score: Number(MARK) / 1000 }] })
     const { url, lines } = await startHarness(fake, { ...DET, detectAnime: spec }, marked)
     const res = await postDetail(url, await quarterRedPng(), 'image/png')
     expect(res.status).toBe(200)

@@ -6,20 +6,12 @@ import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import sharp from 'sharp'
 import type { Config, DetectorSpec, ResizeMode } from './config.ts'
-import { CheckError } from './types.ts'
+import { type Box, CheckError, type Style } from './types.ts'
 
-/** 元の描画の画素座標の箱（整数）。label はクラス名。 */
-export interface Box {
-  x0: number
-  y0: number
-  x1: number
-  y1: number
-  label: string
-  score: number
-}
+export type { Box }
 
-/** 対象のクラスに絞り、スコアの高い順に DETECT_MAX_CROPS 件までにした箱を返す。 */
-export type Detector = (png: Uint8Array, signal?: AbortSignal) => Promise<Box[]>
+/** 対象のクラスに絞り、スコアの高い順に DETECT_MAX_CROPS 件までにした箱と、画風の分類（分類器があるときだけ）を返す。 */
+export type Detector = (png: Uint8Array, signal?: AbortSignal) => Promise<{ style?: Style; boxes: Box[] }>
 
 // --- onnxruntime-node の使う部分だけの構造型（型としても静的に import しない） ---
 export interface OrtTensor {
@@ -401,11 +393,13 @@ export async function createDetector(
   return async (png, signal) => {
     signal?.throwIfAborted()
     let use = dets
+    let found: Style | undefined
     if (style && cls) {
       // 検出器は [イラスト用, 写真用] の順
       const out = await infer(ort, cls.session, await styleTensor(png), STYLE_SIZE, STYLE_SIZE, cls.shape, signal)
       const p = toProbs(out.data)[cls.real]!
-      use = p >= style.realHi ? [dets[1]!] : p <= style.realLo ? [dets[0]!] : dets
+      found = { pReal: p, use: p >= style.realHi ? 'photo' : p <= style.realLo ? 'illust' : 'both' }
+      use = found.use === 'photo' ? [dets[1]!] : found.use === 'illust' ? [dets[0]!] : dets
     }
     const lists: Box[][] = []
     for (const d of use) {
@@ -416,6 +410,6 @@ export async function createDetector(
     }
     const all = lists.flat()
     // 2 つの検出器なら、まとめてもう一度 NMS（同点は検出器の順、次に元の並び）
-    return (lists.length > 1 ? nms(all, iouThr) : all).slice(0, max)
+    return { style: found, boxes: (lists.length > 1 ? nms(all, iouThr) : all).slice(0, max) }
   }
 }

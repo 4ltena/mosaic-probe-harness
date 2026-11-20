@@ -41,6 +41,32 @@ export interface Detail {
   render: string
   classes: Classes
   perModel: Record<string, Probs4>
+  /** DETECT=1 のときだけ。選ばれた候補の描画の、画風の分類と検出の箱。 */
+  detect?: Found
+}
+
+/** 検出器の箱。座標は判定に使った描画（縮小後）の画素の整数。label はクラス名。 */
+export interface Box {
+  x0: number
+  y0: number
+  x1: number
+  y1: number
+  label: string
+  score: number
+}
+
+/** 画風の分類（STYLE_MODEL があるときだけ）。use は使った検出器（illust・photo、間なら both）。 */
+export interface Style {
+  pReal: number
+  use: 'illust' | 'photo' | 'both'
+}
+
+/** 1 描画分の前段の結果。width・height は箱の座標の基準の寸法。 */
+export interface Found {
+  style?: Style
+  width: number
+  height: number
+  boxes: Box[]
 }
 
 /** 評価専用の 3 段階ラベル（サーバーは使わない）。 */

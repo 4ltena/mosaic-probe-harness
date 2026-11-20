@@ -20,19 +20,21 @@ export function cropRect(box: Box, w: number, h: number, margin: number, minSide
   return { left, top, width, height }
 }
 
-/** CheckDeps.crops の形の関数を返す。検出器の並びを保ち、範囲が描画全体と同じものは除く。 */
+/**
+ * CheckDeps.crops の形の関数を返す。検出器の並びを保ち、範囲が描画全体と同じものは切り出さない。
+ * found には、切り出さなかった箱も含めて検出器の箱をすべて入れる。
+ */
 export function buildCrops(cfg: Config, detector: Detector): NonNullable<CheckDeps['crops']> {
   return async (png, signal) => {
-    const boxes = await detector(png, signal)
-    if (boxes.length === 0) return []
+    const { style, boxes } = await detector(png, signal)
     const { width: w, height: h } = await sharp(png).metadata()
     if (!w || !h) throw new CheckError('internal', '画像の寸法を読み取れません')
-    const out: Uint8Array[] = []
+    const parts: Uint8Array[] = []
     for (const box of boxes) {
       const r = cropRect(box, w, h, cfg.detectMargin, cfg.detectMinSide)
       if (r.width === w && r.height === h) continue
-      out.push(new Uint8Array(await sharp(png).extract(r).png({ palette: false }).toBuffer()))
+      parts.push(new Uint8Array(await sharp(png).extract(r).png({ palette: false }).toBuffer()))
     }
-    return out
+    return { parts, found: { style, width: w, height: h, boxes } }
   }
 }

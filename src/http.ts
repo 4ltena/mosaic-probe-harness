@@ -2,7 +2,9 @@ import { createHash } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { Config } from './config.ts'
 import { authOk, corsHeaders, ipAllowed } from './net.ts'
-import { CheckError, DETAIL_FIELDS, type Detail, type DetailField, HTTP_STATUS_OF_KIND, type Judgment, PsdRenderLimitError } from './types.ts'
+import {
+  type Box, CheckError, DETAIL_FIELDS, type Detail, type DetailField, HTTP_STATUS_OF_KIND, type Judgment, PsdRenderLimitError, type Style,
+} from './types.ts'
 
 export interface Handlers {
   check(bytes: Uint8Array, signal: AbortSignal): Promise<number>
@@ -20,6 +22,14 @@ export interface DetailJson {
   render?: string
   classes?: Detail['classes']
   per_model?: Detail['perModel']
+  /** DETECT=1 の detail だけ。style と p_real は分類器がなければ null。箱の座標は width × height の描画の画素。 */
+  detect?: {
+    style: Style['use'] | null
+    p_real: number | null
+    width: number
+    height: number
+    boxes: Box[]
+  }
 }
 
 const JUDGMENTS: readonly string[] = ['ok', 'forgot', 'nori']
@@ -58,6 +68,19 @@ export function detailJson(d: Detail, fields?: readonly DetailField[]): DetailJs
     }
     out.per_model = Object.fromEntries(entries.map(([name, { none, processed, forgot, nori }]) =>
       [name, { none, processed, forgot, nori }]))
+    const f = d.detect
+    if (f) {
+      const px = (v: unknown, max: number) => Number.isInteger(v) && (v as number) >= 0 && (v as number) <= max
+      if (!px(f.width, Infinity) || !px(f.height, Infinity) || (f.style && !ok(f.style.pReal))) return undefined
+      if (f.boxes.some((b) => !ok(b.score) || !px(b.x0, f.width) || !px(b.x1, f.width) || !px(b.y0, f.height) || !px(b.y1, f.height))) return undefined
+      out.detect = {
+        style: f.style?.use ?? null,
+        p_real: f.style?.pReal ?? null,
+        width: f.width,
+        height: f.height,
+        boxes: f.boxes.map(({ label, score, x0, y0, x1, y1 }) => ({ label, score, x0, y0, x1, y1 })),
+      }
+    }
   }
   return out
 }

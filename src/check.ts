@@ -1,7 +1,7 @@
 import { totalJudgeSlots, type Config } from './config.ts'
 import type { RenderOptions, Variant } from './layers.ts'
 import { aggregate, judge4, type Calibrator } from './probability.ts'
-import { CheckError, type Detail, type Judge } from './types.ts'
+import { CheckError, type Detail, type Found, type Judge } from './types.ts'
 
 export interface CheckDeps {
   renderVariants: (data: Uint8Array, opts: RenderOptions) => Promise<Variant[]>
@@ -11,10 +11,10 @@ export interface CheckDeps {
   recheck?: (png: Uint8Array, p: number, signal?: AbortSignal) => Promise<number>
   log?: (line: string) => void
   /**
-   * DETECT=1 のときの切り出し（検出の並び順、DETECT_MAX_CROPS 件以下）。server.ts と eval が src/crops.ts の buildCrops で作る。
-   * cfg.detect が真のときだけ呼ぶ。ここでは crops.ts も detect.ts も import しない。
+   * DETECT=1 のときの切り出し（parts は検出の並び順、DETECT_MAX_CROPS 件以下）と、その描画の画風・箱（found）。
+   * server.ts と eval が src/crops.ts の buildCrops で作る。cfg.detect が真のときだけ呼ぶ。ここでは crops.ts も detect.ts も import しない。
    */
-  crops?: (png: Uint8Array, signal: AbortSignal) => Promise<Uint8Array[]>
+  crops?: (png: Uint8Array, signal: AbortSignal) => Promise<{ parts: Uint8Array[]; found: Found }>
 }
 
 /** 同じ描画について全モデルの確率を集め、統合後に式を適用する。 */
@@ -78,6 +78,8 @@ export async function checkResult(
     // 全体の描画の最悪（再判定の対象）と、切り出しの最悪を分けて持つ
     let worst: Scored | undefined
     let worstCrop: Scored | undefined
+    // 描画の番号ごとの前段の結果（選ばれた候補の描画のものを detail.detect に入れる）
+    const found: Found[] = []
     let next = 0
     const worker = async (): Promise<void> => {
       while (next < variants.length) {
@@ -90,7 +92,9 @@ export async function checkResult(
         const full = await score(deps, png, index, 0, variant.description, workSignal)
         if (worse(full, worst)) worst = full
         if (!crops) continue
-        for (const [i, part] of (await crops(png, workSignal)).entries()) {
+        const { parts, found: f } = await crops(png, workSignal)
+        found[index] = f
+        for (const [i, part] of parts.entries()) {
           const c = await score(deps, part, index, i + 1, `${variant.description}の切り出し ${i + 1}`, workSignal)
           if (worse(c, worstCrop)) worstCrop = c
         }
@@ -114,6 +118,7 @@ export async function checkResult(
     workSignal.throwIfAborted()
     // 切り出しは再判定に渡さない。再判定のあとの全体と比べて、悪い方を採る
     const pick = worstCrop && worse(worstCrop, worst) ? worstCrop : worst!
+    if (found[pick.index]) pick.detail.detect = found[pick.index]
     return { detail: pick.detail, q: pick.q }
   } catch (e) {
     ctl.abort(e)

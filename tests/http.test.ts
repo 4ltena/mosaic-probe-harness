@@ -301,7 +301,22 @@ const DETAIL_BODY = {
   per_model: DETAIL.perModel,
 }
 
+const BOX = { x0: 0, y0: 10, x1: 32, y1: 64, label: 'penis', score: 0.9 }
+
 describe('createHttpServer detail', () => {
+  it('DETECT=1 の detect は detail=1 だけで返し、fields では返さない。分類器がなければ style と p_real は null', async () => {
+    const found: Detail = { ...DETAIL, detect: { style: { pReal: 0.03, use: 'illust' }, width: 64, height: 64, boxes: [BOX] } }
+    const { base } = await start({}, { check: okCheck, checkDetail: async () => found })
+    const r = await fetch(`${base}/v1/check?detail=1`, { method: 'POST', body: 'x' })
+    expect(await r.json()).toEqual({ ...DETAIL_BODY, detect: { style: 'illust', p_real: 0.03, width: 64, height: 64, boxes: [BOX] } })
+    const f = await fetch(`${base}/v1/check?fields=render`, { method: 'POST', body: 'x' })
+    expect(await f.json()).toEqual({ p_ok: 0.12, render: DETAIL.render })
+    const plain: Detail = { ...DETAIL, detect: { width: 64, height: 64, boxes: [] } }
+    const two = await start({}, { check: okCheck, checkDetail: async () => plain })
+    const r2 = await fetch(`${two.base}/v1/check?detail=1`, { method: 'POST', body: 'x' })
+    expect((await r2.json()).detect).toEqual({ style: null, p_real: null, width: 64, height: 64, boxes: [] })
+  })
+
   it('?detail=1 は詳細 JSON（p_ok・render・classes と per_model）を返す', async () => {
     let detailCalls = 0
     let checkCalls = 0
@@ -379,6 +394,10 @@ describe('createHttpServer detail', () => {
       { ...DETAIL, classes: { ...DETAIL.classes, nori: Infinity } },
       { ...DETAIL, confidence: 1.5 },
       { ...DETAIL, judgment: 'unknown' as Detail['judgment'] },
+      { ...DETAIL, detect: { width: 64, height: 64, boxes: [{ ...BOX, x1: 65 }] } },
+      { ...DETAIL, detect: { width: 64, height: 64, boxes: [{ ...BOX, y0: 1.5 }] } },
+      { ...DETAIL, detect: { width: 64, height: 64, boxes: [{ ...BOX, score: NaN }] } },
+      { ...DETAIL, detect: { style: { pReal: 1.5, use: 'photo' }, width: 64, height: 64, boxes: [] } },
     ]
     for (const bad of bads) {
       const { base } = await start({}, { check: okCheck, checkDetail: async () => bad })
