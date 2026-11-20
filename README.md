@@ -9,7 +9,8 @@
 - **前段の検出（任意・既定オフ）**: `DETECT=1` にすると、画風（写真かイラストか）に合った検出器で部位を見つけ、その切り出しも同じ判定器で判定して、全体と切り出しのうち最も悪い候補を採用します。API の応答形式は変わりません（[設定](#前段の画風分類部位検出と切り出し判定試験機能既定オフ)）。
 
 > **関連ドキュメント**
-> - 変更履歴・移行時の確認項目（v1.3 / v1.1）: [CHANGELOG.md](CHANGELOG.md)
+> - 変更履歴・移行時の確認項目（v1.3 / v1.2 / v1.1）: [CHANGELOG.md](CHANGELOG.md)
+> - Mac mini の状態確認（既存ダッシュボード・Health API）: [docs/mac-mini-health.md](docs/mac-mini-health.md)
 > - AI エージェント向けの呼び出し仕様・注意事項: [docs/agent-usage.md](docs/agent-usage.md)
 > - 実機での前提確認・ルール同期・評価・較正・複数台の手順: [docs/operations.md](docs/operations.md)
 > - 設計の要点（確率の作り方、Pi の使い方、レイヤー安全）: [docs/design.md](docs/design.md)
