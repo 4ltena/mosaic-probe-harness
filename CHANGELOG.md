@@ -1,5 +1,13 @@
 # 変更履歴
 
+## v1.2.0（2026-11-21、未公開）
+
+文書だけの更新です。API と判定は v1.1.0 から変わりません。
+
+### 追加
+
+- Mac mini 本体の状態を LAN から確認する手順（[docs/mac-mini-health.md](docs/mac-mini-health.md)）。macmini-hub の Health 画面・API の使い方と、Merak の Health 画面への登録例を載せています。README の関連ドキュメントからたどれます。
+
 ## v1.1.0（未公開）
 
 直前の実装（パッケージ表記は `0.1.0`）からの変更です。
