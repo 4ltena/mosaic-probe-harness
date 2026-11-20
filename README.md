@@ -1,5 +1,9 @@
 # mosaic-probe-harness
 
+<p align="center">
+  <a href="https://github.com/4ltena/mosaic-probe-harness/releases/tag/v1.3.0"><strong>v1.3.0</strong></a> · <a href="CHANGELOG.md">変更履歴</a>
+</p>
+
 画像（PSD などのレイヤー付きファイルを含む）を受け取り、**「モザイク処理が必要な部位が存在しない、または十分に処理されている確率（`p_ok`）」**を `0` 〜 `1` の数値 1 個で返すローカル API サーバーです。
 
 - **推論バックエンド**: 同一ホスト（またはローカルネットワーク）上の `llama.cpp`（`llama-server`、マルチモーダル対応 Qwen VLM）を利用します。
