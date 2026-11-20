@@ -12,6 +12,13 @@
 - **判定の委譲**: 既定の応答は確率値 `p_ok` です。しきい値に基づく OK / NG の最終判定は呼び出し側で行ってください。
 - **前段の検出（任意・既定オフ）**: `DETECT=1` にすると、画風（写真かイラストか）に合った検出器で部位を見つけ、その切り出しも同じ判定器で判定して、全体と切り出しのうち最も悪い候補を採用します。API の応答形式は変わりません（[設定](#前段の画風分類部位検出と切り出し判定試験機能既定オフ)）。
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/flow-dark.svg">
+    <img src="docs/assets/flow-light.svg" alt="処理の流れ: PNG・JPEG は 1 枚、GIF・WebP はフレーム、TIFF はページ、PSD はレイヤーの組み合わせに展開し、描画ごとに RGB PNG にそろえて llama-server で判定し、最小の p_ok を返す。検出と切り出し、Pi による再判定は任意">
+  </picture>
+</p>
+
 > **関連ドキュメント**
 > - 変更履歴・移行時の確認項目（v1.3 / v1.2 / v1.1）: [CHANGELOG.md](CHANGELOG.md)
 > - Mac mini の状態確認（既存ダッシュボード・Health API）: [docs/mac-mini-health.md](docs/mac-mini-health.md)
