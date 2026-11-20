@@ -16,10 +16,6 @@
   <a href="https://github.com/sponsors/4ltena"><img alt="Sponsor 4ltena" src="https://img.shields.io/badge/Sponsor-4ltena-35505B?style=for-the-badge&labelColor=182D36&logo=githubsponsors&logoColor=white"></a>
 </p>
 
-<p align="center">
-  <strong>ローカル・LAN 向け · パッケージ未公開</strong> · <a href="CHANGELOG.md">変更履歴</a>
-</p>
-
 画像（PSD などのレイヤー付きファイルを含む）を受け取り、**「モザイク処理が必要な部位が存在しない、または十分に処理されている確率（`p_ok`）」**を `0` 〜 `1` の数値 1 個で返すローカル API サーバーです。
 
 - **推論バックエンド**: 同一ホスト（またはローカルネットワーク）上の `llama.cpp`（`llama-server`、マルチモーダル対応 Qwen VLM）を利用します。
