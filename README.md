@@ -33,7 +33,6 @@
 
 > **関連ドキュメント**
 > - 変更履歴・移行時の確認項目（v1.3 / v1.2 / v1.1）: [CHANGELOG.md](CHANGELOG.md)
-> - Mac mini の状態確認（既存ダッシュボード・Health API）: [docs/mac-mini-health.md](docs/mac-mini-health.md)
 > - AI エージェント向けの呼び出し仕様・注意事項: [docs/agent-usage.md](docs/agent-usage.md)
 > - 実機での前提確認・ルール同期・評価・較正・複数台の手順: [docs/operations.md](docs/operations.md)
 > - 設計の要点（確率の作り方、Pi の使い方、レイヤー安全）: [docs/design.md](docs/design.md)

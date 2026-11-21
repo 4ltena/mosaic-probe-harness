@@ -1,5 +1,11 @@
 # 変更履歴
 
+## 未公開
+
+### 削除
+
+- Mac mini 本体の状態を LAN から確認する手順（`docs/mac-mini-health.md`）。Mosaic の機能ではなく、別に運用している監視ツールの説明だったため。README の関連ドキュメントからも外しました。
+
 ## v1.3.0（2026-11-21）
 
 ### 新機能: 前段の画風分類・部位検出と切り出し判定（任意・既定オフ）
@@ -48,7 +54,7 @@
 
 ### 追加
 
-- Mac mini 本体の状態を LAN から確認する手順（[docs/mac-mini-health.md](docs/mac-mini-health.md)）。macmini-hub の Health 画面・API の使い方と、Merak の Health 画面への登録例を載せています。README の関連ドキュメントからたどれます。
+- Mac mini 本体の状態を LAN から確認する手順。未公開の版で削除しました。
 
 ## v1.1.0（2026-11-19）
 
